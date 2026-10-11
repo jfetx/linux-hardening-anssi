@@ -384,8 +384,9 @@ sudo reboot
 - 🎚️ Le **niveau attendu** (Minimal, Intermédiaire, Renforcé…) se décide avec le commanditaire, selon la sensibilité du système.
 - 🏷️ Ce projet n'est ni produit, ni validé, ni certifié par l'ANSSI.
 
+
 <div align="center">
 
-Fait avec ☕ et beaucoup de snapshots Proxmox · [@jfetx](https://github.com/jfetx)
+Fait en collaboration avec 🧠Claude🧠 et beaucoup de snapshots Proxmox · [@jfetx](https://github.com/jfetx)
 
 </div>
