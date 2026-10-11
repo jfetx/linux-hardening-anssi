@@ -238,17 +238,19 @@ apply_M03() {
 }
 
 # --- M04 : services inutiles ---------------------------------------------------
-SVC_UNWANTED=(avahi-daemon.service avahi-daemon.socket cups.service cups.socket cups.path
-              cups-browsed.service bluetooth.service ModemManager.service rpcbind.service
-              rpcbind.socket nfs-server.service smbd.service nmbd.service)
+SVC_UNWANTED=(avahi-daemon.socket avahi-daemon.service cups.socket cups.path cups.service
+              cups-browsed.service bluetooth.service ModemManager.service rpcbind.socket
+              rpcbind.service nfs-server.service smbd.service nmbd.service)
 # Services ajoutés en v1.4 : stockage SAN inutile sur un poste, PackageKit,
 # thermald uniquement sur machine virtuelle, snapd uniquement si aucun snap n'est installé
 svc_list() {
-  printf '%s\n' "${SVC_UNWANTED[@]}" iscsid.service iscsid.socket multipathd.service \
-    multipathd.socket packagekit.service
+  # Les .socket AVANT leur .service : sinon le socket relance le service désactivé
+  printf '%s\n' "${SVC_UNWANTED[@]}" iscsid.socket iscsid.service multipathd.socket \
+    multipathd.service packagekit.service
   systemd-detect-virt -q 2>/dev/null && echo thermald.service
-  if command -v snap >/dev/null 2>&1 && (( $(snap list 2>/dev/null | wc -l) <= 1 )); then
-    printf '%s\n' snapd.service snapd.socket snapd.seeded.service
+  # Aucun snap installé ? (test sur disque : la commande « snap » bloque si snapd est arrêté)
+  if [[ -d /var/lib/snapd ]] && ! compgen -G '/var/lib/snapd/snaps/*.snap' >/dev/null; then
+    printf '%s\n' snapd.socket snapd.service snapd.seeded.service
   fi
 }
 register M04 M "Réduction de la surface" "Services inutiles désactivés (avahi, cups, bluetooth, rpcbind, samba, iscsid, multipathd…)"
