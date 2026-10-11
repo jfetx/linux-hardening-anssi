@@ -2,7 +2,7 @@
 # =============================================================================
 #  anssi-audit.sh — Audit de conformité ANSSI-BP-028 (lecture seule)
 # -----------------------------------------------------------------------------
-#  Usage : sudo ./anssi-audit.sh [-l minimal|intermediaire] [-o rapport.csv]
+#  Usage : sudo ./anssi-audit.sh [-l minimal|intermediaire|renforce] [-o rapport.csv]
 #    -l  niveau à auditer (défaut : intermediaire, qui inclut minimal)
 #    -o  export CSV (séparateur « ; ») pour la documentation de livraison
 #  Code retour : 0 si aucune non-conformité, 1 sinon.
@@ -24,7 +24,7 @@ while (($#)); do
     *) err "Option inconnue : $1"; usage 1 ;;
   esac
 done
-[[ $LEVEL == minimal || $LEVEL == intermediaire ]] || { err "Niveau invalide : $LEVEL"; exit 1; }
+[[ $LEVEL == minimal || $LEVEL == intermediaire || $LEVEL == renforce ]] || { err "Niveau invalide : $LEVEL"; exit 1; }
 DRY_RUN=1   # l'audit ne modifie rien (et n'écrit pas dans le journal)
 
 [[ $EUID -eq 0 ]] || warn "Exécution sans root : plusieurs contrôles seront incomplets."

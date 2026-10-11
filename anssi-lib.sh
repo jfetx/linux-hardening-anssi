@@ -52,8 +52,12 @@ register() {
 
 # Le niveau choisi inclut-il la mesure ? (intermédiaire inclut minimal)
 level_includes() { # niveau_choisi niveau_mesure
-  [[ $2 == M ]] && return 0
-  [[ $1 == intermediaire && $2 == I ]]
+  case $2 in
+    M) return 0 ;;
+    I) [[ $1 == intermediaire || $1 == renforce ]] ;;
+    R) [[ $1 == renforce ]] ;;
+    *) return 1 ;;
+  esac
 }
 
 # =============================================================================
@@ -999,3 +1003,8 @@ AllowGroups $SSH_GROUP"
     err "Configuration SSH invalide : restauration."; restore_file "$SSH_ALLOW_FILE"; return 1
   fi
 }
+
+# --- Niveau Renforcé : module optionnel ---------------------------------------------
+# shellcheck source=anssi-lib-renforce.sh
+_ANSSI_R="$(dirname "${BASH_SOURCE[0]}")/anssi-lib-renforce.sh"
+[[ -f $_ANSSI_R ]] && source "$_ANSSI_R"

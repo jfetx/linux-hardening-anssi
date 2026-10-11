@@ -5,10 +5,10 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.4-blue)
+![Version](https://img.shields.io/badge/version-v1.5-blue)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
-![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%2B%20Interm%C3%A9diaire-002395)
+![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
 ![Mesures](https://img.shields.io/badge/mesures-30-success)
 
 </div>
@@ -51,6 +51,7 @@
 
 | Fichier | Rôle |
 | --- | --- |
+| 🟥 `anssi-lib-renforce.sh` | Niveau Renforcé : mesures simples (R01–R12) et points à étudier (R20–R27) |
 | 📚 `anssi-lib.sh` | Définition des 28 mesures : une fonction `check_<ID>` (contrôle) et une fonction `apply_<ID>` (correction) par mesure |
 | 🔍 `anssi-audit.sh` | Audit en lecture seule, tableau de conformité, export CSV |
 | 🔒 `anssi-harden.sh` | Durcissement : menu interactif, mode automatique, sélection d'IDs, simulation |
@@ -195,7 +196,7 @@ Depuis Linux ou macOS : `ssh-copy-id <user>@<ip>`.
 ## 🔍 Étape 3 — Audit initial
 
 ```bash
-git clone --depth 1 --branch v1.4 https://github.com/jfetx/linux-hardening-anssi.git
+git clone --depth 1 --branch v1.5 https://github.com/jfetx/linux-hardening-anssi.git
 cd linux-hardening-anssi
 sudo bash anssi-audit.sh -o audit-0-initial-$(hostname).csv
 ```
@@ -313,6 +314,40 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 | I14 | 📁 Fichiers | Inventaire setuid/setgid | 👁️ à justifier |
 | I15 | 📁 Fichiers | Bits SUID/SGID superflus retirés (`dpkg-statoverride`) | ✅ auto |
 
+### 🟥 Niveau Renforcé (`-l renforce`, depuis v1.5)
+
+> ⚠️ Le niveau Renforcé n'est pas « un script de plus » : la moitié des points dépend des applications, de l'infrastructure ou du matériel. Le script applique les mesures **génériques** et **signale** les autres.
+
+**Mesures simples (contrôle + correction)**
+
+| ID | Mesure | Correction |
+| --- | --- | --- |
+| R01 | Options noyau au démarrage (`init_on_free`, `pti=on`, `vsyscall=none`…) | ✅ auto · 🔄 redémarrage |
+| R02 | Verrouillage après 5 échecs (`pam_faillock`) | 🚦 sensible |
+| R03 | umask 077 | ✅ auto |
+| R04 | Répertoires personnels en 750 | ✅ auto |
+| R05 | Aucun compilateur installé | ✅ auto |
+| R06 | SSH : algorithmes restreints (guide ANSSI OpenSSH) | ✅ auto |
+| R07 | Déconnexion des shells inactifs (`TMOUT=900`) | ✅ auto |
+| R08 | Ctrl-Alt-Suppr désactivé | ✅ auto |
+| R09 | Règles auditd verrouillées (`-e 2`) | ✅ auto · 🔄 redémarrage |
+| R10 | Intégrité des fichiers (AIDE) | ✅ auto (plusieurs minutes) |
+| R11 | Modules noyau bloqués après le démarrage | 🚦 sensible · 🔄 redémarrage |
+| R12 | IPv6 désactivé s'il n'est pas utilisé | 🚦 sensible |
+
+**Points à étudier (contrôle seul)**
+
+| ID | Point | Dépend de |
+| --- | --- | --- |
+| R20 | Isolation des services systemd | Chaque service (`systemd-analyze security`) |
+| R21 | Profils AppArmor des services exposés | Applications en écoute réseau |
+| R22 | Journalisation centralisée | Un serveur de journaux |
+| R23 | Règles sudo par commande | Les rôles des administrateurs |
+| R24 | `/proc` avec `hidepid` | Outils de supervision, systemd-logind |
+| R25 | USBGuard | Inventaire des périphériques légitimes |
+| R26 | Chiffrement LUKS | Installation (phrase de passe ou TPM) |
+| R27 | UEFI + Secure Boot, IOMMU | Matériel et micrologiciel |
+
 ---
 
 ## ⚠️ Pièges connus sur Ubuntu
@@ -370,6 +405,8 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.5** | Module `anssi-lib-renforce.sh`, niveau `-l renforce` : 12 mesures simples (R01–R12, dont 3 sensibles) + 8 points à étudier en contrôle seul (R20–R27) |
+| **v1.4.1** | M04 : test des snaps sur disque (la commande `snap` bloquait une fois snapd arrêté) ; sockets désactivés avant leurs services |
 | **v1.4** | Correction `unprivileged_bpf_disabled` (valeur exacte 1) ; M14 bannière légale ; I16 `AllowGroups` SSH (sensible) ; droits `sudoers.d` et cron ; SSH `MaxSessions`/`TCPKeepAlive` ; sysctl `ldisc_autoload`, `core_uses_pid` ; services SAN/PackageKit/thermald/snapd — 30 mesures |
 | **v1.3** | I07 passe automatiquement les profils AppArmor « complain » en « enforce » ; nouvelle mesure I15 (retrait SUID/SGID via `dpkg-statoverride`) — 28 mesures |
 | **v1.2** | Les contrôles I01, I02 et I11 vérifient la configuration persistante, pas seulement l'état en mémoire |

@@ -2,7 +2,7 @@
 # =============================================================================
 #  anssi-harden.sh — Durcissement interactif ANSSI-BP-028 (Minimal / Intermédiaire)
 # -----------------------------------------------------------------------------
-#  Usage : sudo ./anssi-harden.sh [-l minimal|intermediaire] [-a] [-n] [-m ID,ID…]
+#  Usage : sudo ./anssi-harden.sh [-l minimal|intermediaire|renforce] [-a] [-n] [-m ID,ID…]
 #    -l  niveau (sinon menu)
 #    -a  automatique : applique les mesures non conformes avec les réponses par
 #        défaut, SAUF les mesures sensibles (USB, GRUB) qui restent manuelles
@@ -50,10 +50,11 @@ if [[ -z $LEVEL ]]; then
   echo "Niveau de durcissement :"
   echo "  1) Minimal"
   echo "  2) Intermédiaire (inclut Minimal)"
+  echo "  3) Renforcé (inclut Intermédiaire) : mesures simples + points à étudier"
   read -r -p "Choix [2] : " c <"$TTY"
-  [[ $c == 1 ]] && LEVEL=minimal || LEVEL=intermediaire
+  case $c in 1) LEVEL=minimal ;; 3) LEVEL=renforce ;; *) LEVEL=intermediaire ;; esac
 fi
-[[ $LEVEL == minimal || $LEVEL == intermediaire ]] || { err "Niveau invalide : $LEVEL"; exit 1; }
+[[ $LEVEL == minimal || $LEVEL == intermediaire || $LEVEL == renforce ]] || { err "Niveau invalide : $LEVEL"; exit 1; }
 
 # --- État initial ------------------------------------------------------------
 declare -a TODO=()
@@ -128,7 +129,11 @@ for id in "${TODO[@]}"; do
     if ((after == OK)); then
       echo "    ${C_GRN}✔ Conforme après application.${C_RST}"; DONE+=("$id"); log "APPLIQUE $id"
     else
-      echo "    ${C_YEL}⚠ Toujours non conforme : $DETAIL${C_RST}"; SKIPPED+=("$id"); log "PARTIEL $id"
+      if ((after == WARN)); then
+        echo "    ${C_YEL}⚠ Appliqué, à vérifier : $DETAIL${C_RST}"; DONE+=("$id"); log "APPLIQUE(A_VERIFIER) $id"
+      else
+        echo "    ${C_YEL}⚠ Toujours non conforme : $DETAIL${C_RST}"; SKIPPED+=("$id"); log "PARTIEL $id"
+      fi
     fi
   fi
 done
