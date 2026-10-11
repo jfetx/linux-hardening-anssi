@@ -536,7 +536,15 @@ disable_apport() {
 }
 
 register I01 I "Noyau / réseau" "Paramètres réseau du noyau (redirections, routage source, rp_filter…)"
-check_I01() { sysctl_check SYSCTL_NET && return $OK || return $KO; }
+check_I01() {
+  sysctl_check SYSCTL_NET || return $KO
+  # Persistance : fichier ANSSI présent et ufw ne remet pas log_martians à 0 au démarrage
+  [[ -f /etc/sysctl.d/99-zz-anssi-reseau.conf ]] || { DETAIL="valeurs OK mais non persistantes (fichier 99-zz-anssi-reseau.conf absent)"; return $KO; }
+  if grep -qE '^net/ipv4/conf/(all|default)/log_martians=0' /etc/ufw/sysctl.conf 2>/dev/null; then
+    DETAIL="ufw remettra log_martians=0 au démarrage (/etc/ufw/sysctl.conf)"; return $KO
+  fi
+  return $OK
+}
 # NB : préfixe 99-zz pour passer APRÈS /usr/lib/sysctl.d/99-protect-links.conf (Ubuntu)
 apply_I01() {
   remove_old_sysctl /etc/sysctl.d/90-anssi-reseau.conf
@@ -553,7 +561,13 @@ apply_I01() {
 }
 
 register I02 I "Noyau" "Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, protected_*…)"
-check_I02() { sysctl_check SYSCTL_KERN && return $OK || return $KO; }
+apport_active() { pkg_installed apport && systemctl is-enabled -q apport.service 2>/dev/null; }
+check_I02() {
+  sysctl_check SYSCTL_KERN || return $KO
+  [[ -f /etc/sysctl.d/99-zz-anssi-noyau.conf ]] || { DETAIL="valeurs OK mais non persistantes (fichier 99-zz-anssi-noyau.conf absent)"; return $KO; }
+  apport_active && { DETAIL="apport actif : remettra fs.suid_dumpable=2 au démarrage"; return $KO; }
+  return $OK
+}
 apply_I02() {
   remove_old_sysctl /etc/sysctl.d/91-anssi-noyau.conf
   sysctl_apply SYSCTL_KERN /etc/sysctl.d/99-zz-anssi-noyau.conf
@@ -759,6 +773,7 @@ check_I11() {
   if pkg_installed systemd-coredump; then
     grep -hqE '^Storage=none' /etc/systemd/coredump.conf /etc/systemd/coredump.conf.d/*.conf 2>/dev/null || bad+=("systemd-coredump")
   fi
+  apport_active && bad+=("apport actif")
   DETAIL="écarts : $(summarize "${bad[@]}")"
   ((${#bad[@]}==0)) && return $OK || return $KO
 }
