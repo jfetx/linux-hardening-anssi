@@ -5,11 +5,11 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.3-blue)
+![Version](https://img.shields.io/badge/version-v1.4-blue)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%2B%20Interm%C3%A9diaire-002395)
-![Mesures](https://img.shields.io/badge/mesures-28-success)
+![Mesures](https://img.shields.io/badge/mesures-30-success)
 
 </div>
 
@@ -195,7 +195,7 @@ Depuis Linux ou macOS : `ssh-copy-id <user>@<ip>`.
 ## 🔍 Étape 3 — Audit initial
 
 ```bash
-git clone --depth 1 --branch v1.3 https://github.com/jfetx/linux-hardening-anssi.git
+git clone --depth 1 --branch v1.4 https://github.com/jfetx/linux-hardening-anssi.git
 cd linux-hardening-anssi
 sudo bash anssi-audit.sh -o audit-0-initial-$(hostname).csv
 ```
@@ -370,6 +370,7 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.4** | Correction `unprivileged_bpf_disabled` (valeur exacte 1) ; M14 bannière légale ; I16 `AllowGroups` SSH (sensible) ; droits `sudoers.d` et cron ; SSH `MaxSessions`/`TCPKeepAlive` ; sysctl `ldisc_autoload`, `core_uses_pid` ; services SAN/PackageKit/thermald/snapd — 30 mesures |
 | **v1.3** | I07 passe automatiquement les profils AppArmor « complain » en « enforce » ; nouvelle mesure I15 (retrait SUID/SGID via `dpkg-statoverride`) — 28 mesures |
 | **v1.2** | Les contrôles I01, I02 et I11 vérifient la configuration persistante, pas seulement l'état en mémoire |
 | **v1.1** | Persistance des paramètres sysctl après redémarrage (ordre des fichiers, ufw, apport) |
@@ -384,9 +385,8 @@ sudo reboot
 - 🎚️ Le **niveau attendu** (Minimal, Intermédiaire, Renforcé…) se décide avec le commanditaire, selon la sensibilité du système.
 - 🏷️ Ce projet n'est ni produit, ni validé, ni certifié par l'ANSSI.
 
-
 <div align="center">
 
-Fait en collaboration avec 🧠Claude🧠 et beaucoup de snapshots Proxmox · [@jfetx](https://github.com/jfetx)
+Fait avec ☕ et beaucoup de snapshots Proxmox · [@jfetx](https://github.com/jfetx)
 
 </div>

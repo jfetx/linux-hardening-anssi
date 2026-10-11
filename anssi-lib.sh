@@ -241,10 +241,20 @@ apply_M03() {
 SVC_UNWANTED=(avahi-daemon.service avahi-daemon.socket cups.service cups.socket cups.path
               cups-browsed.service bluetooth.service ModemManager.service rpcbind.service
               rpcbind.socket nfs-server.service smbd.service nmbd.service)
-register M04 M "Réduction de la surface" "Services inutiles désactivés (avahi, cups, bluetooth, rpcbind, samba…)"
+# Services ajoutés en v1.4 : stockage SAN inutile sur un poste, PackageKit,
+# thermald uniquement sur machine virtuelle, snapd uniquement si aucun snap n'est installé
+svc_list() {
+  printf '%s\n' "${SVC_UNWANTED[@]}" iscsid.service iscsid.socket multipathd.service \
+    multipathd.socket packagekit.service
+  systemd-detect-virt -q 2>/dev/null && echo thermald.service
+  if command -v snap >/dev/null 2>&1 && (( $(snap list 2>/dev/null | wc -l) <= 1 )); then
+    printf '%s\n' snapd.service snapd.socket snapd.seeded.service
+  fi
+}
+register M04 M "Réduction de la surface" "Services inutiles désactivés (avahi, cups, bluetooth, rpcbind, samba, iscsid, multipathd…)"
 check_M04() {
   local s found=()
-  for s in "${SVC_UNWANTED[@]}"; do
+  for s in $(svc_list); do
     [[ $(systemctl is-enabled "$s" 2>/dev/null) == enabled ]] && found+=("$s")
   done
   DETAIL="actifs : $(summarize "${found[@]}")"
@@ -253,7 +263,7 @@ check_M04() {
 apply_M04() {
   local s
   info "Conserver un service s'il est utile au projet (ex. cups pour une imprimante)."
-  for s in "${SVC_UNWANTED[@]}"; do
+  for s in $(svc_list); do
     [[ $(systemctl is-enabled "$s" 2>/dev/null) == enabled ]] || continue
     if confirm "Désactiver et masquer $s ?" o; then
       run systemctl disable --now "$s" && run systemctl mask "$s"
@@ -294,6 +304,7 @@ declare -A SSH_WANT=(
   [ignorerhosts]=yes          [permituserenvironment]=no  [allowtcpforwarding]=no
   [allowagentforwarding]=no   [clientaliveinterval]=300   [clientalivecountmax]=2
   [loglevel]=VERBOSE          [strictmodes]=yes
+  [maxsessions]=2             [tcpkeepalive]=no
 )
 register M06 M "Services réseau" "Serveur SSH durci (root interdit, X11/tunnels off, journalisation…)"
 check_M06() {
@@ -372,7 +383,11 @@ apply_M08() {
 PERM_FILES=("/etc/passwd 644 root:root" "/etc/group 644 root:root"
             "/etc/shadow 640 root:shadow" "/etc/gshadow 640 root:shadow"
             "/etc/sudoers 440 root:root" "/etc/ssh/sshd_config 600 root:root"
-            "/boot/grub/grub.cfg 600 root:root")
+            "/boot/grub/grub.cfg 600 root:root"
+            "/etc/sudoers.d 750 root:root" "/etc/crontab 600 root:root"
+            "/etc/cron.d 700 root:root" "/etc/cron.hourly 700 root:root"
+            "/etc/cron.daily 700 root:root" "/etc/cron.weekly 700 root:root"
+            "/etc/cron.monthly 700 root:root")
 register M09 M "Fichiers" "Droits restreints sur les fichiers sensibles (shadow, sudoers, grub.cfg…)"
 check_M09() {
   local e f m o bad=()
@@ -454,12 +469,38 @@ Compress=yes'
   run systemctl restart systemd-journald
 }
 
+# --- M14 : bannière légale (origine CIS / Lynis) -------------------------------------
+read -r -d '' BANNER_TEXT <<'EOF_BANNER' || true
+******************************************************************************
+*  Système privé. Accès réservé aux personnes autorisées.                      *
+*  Toute connexion est journalisée. Tout accès ou tentative d'accès non        *
+*  autorisé est passible de poursuites (art. 323-1 et suivants du Code pénal). *
+******************************************************************************
+EOF_BANNER
+register M14 M "Journalisation" "Bannière légale avant connexion (/etc/issue, /etc/issue.net)"
+check_M14() {
+  local f bad=()
+  for f in /etc/issue /etc/issue.net; do
+    grep -q 'personnes autorisées' "$f" 2>/dev/null || bad+=("$f")
+  done
+  DETAIL="sans bannière : $(summarize "${bad[@]}")"
+  ((${#bad[@]}==0)) && return $OK || return $KO
+}
+apply_M14() {
+  info "Texte proposé (à faire valider par le client) :"; echo "$BANNER_TEXT"
+  confirm "Installer cette bannière ?" o || return 0
+  write_file /etc/issue 644 "$BANNER_TEXT"
+  write_file /etc/issue.net 644 "$BANNER_TEXT"
+}
+
 # =============================================================================
 #  NIVEAU INTERMÉDIAIRE
 # =============================================================================
 
 # Clés pour lesquelles une valeur supérieure (plus stricte) est acceptée
-declare -A SYSCTL_GE=([kernel.perf_event_paranoid]=1 [kernel.unprivileged_bpf_disabled]=1
+# NB : unprivileged_bpf_disabled n'y figure PAS : 2 (défaut Ubuntu) est réactivable par root,
+#      1 est irréversible jusqu'au redémarrage -> valeur exacte 1 exigée (v1.4)
+declare -A SYSCTL_GE=([kernel.perf_event_paranoid]=1
                       [kernel.kptr_restrict]=1 [kernel.yama.ptrace_scope]=1)
 
 declare -A SYSCTL_NET=(
@@ -483,6 +524,7 @@ declare -A SYSCTL_KERN=(
   [kernel.kexec_load_disabled]=1    [fs.suid_dumpable]=0
   [fs.protected_symlinks]=1         [fs.protected_hardlinks]=1
   [fs.protected_fifos]=2            [fs.protected_regular]=2
+  [dev.tty.ldisc_autoload]=0       [kernel.core_uses_pid]=1
 )
 
 # Clé à ignorer dans le contexte du poste ?
@@ -918,4 +960,40 @@ apply_I15() {
   done
   info "Exceptions enregistrées : dpkg-statoverride --list (à joindre au dossier)."
   info "Tester ensuite : sudo -n true, passwd (en tant qu'utilisateur), connexion SSH."
+}
+
+# --- I16 : SSH réservé à un groupe (guide ANSSI OpenSSH) — SENSIBLE ---------------
+SSH_GROUP=ssh-users
+SSH_ALLOW_FILE=/etc/ssh/sshd_config.d/01-anssi-allowgroups.conf
+register I16 I "Services réseau" "Connexion SSH réservée aux membres d'un groupe dédié (AllowGroups)" 1
+check_I16() {
+  pkg_installed openssh-server || { DETAIL="serveur SSH non installé"; return $NA; }
+  local v; mkdir -p /run/sshd 2>/dev/null
+  v=$(sshd -T 2>/dev/null | awk '$1=="allowgroups"{$1=""; print}')
+  v=${v# }
+  DETAIL="AllowGroups : ${v:-non défini} ; membres de $SSH_GROUP : $(getent group "$SSH_GROUP" | cut -d: -f4)"
+  [[ -n $v ]] && return $OK || return $KO
+}
+apply_I16() {
+  pkg_installed openssh-server || return 0
+  local admins u members
+  admins=$(getent group sudo | cut -d: -f4 | tr ',' ' ')
+  warn "Seuls les membres du groupe '$SSH_GROUP' pourront se connecter en SSH."
+  run groupadd -f "$SSH_GROUP"
+  for u in $admins; do
+    confirm "Autoriser $u en SSH (ajout au groupe $SSH_GROUP) ?" o && run usermod -aG "$SSH_GROUP" "$u"
+  done
+  members=$(getent group "$SSH_GROUP" | cut -d: -f4)
+  if ((DRY_RUN == 0)) && [[ -z $members ]]; then
+    err "Le groupe $SSH_GROUP est vide : AllowGroups n'est pas appliqué (vous seriez enfermé dehors)."; return 1
+  fi
+  write_file "$SSH_ALLOW_FILE" 600 "# Accès SSH réservé au groupe $SSH_GROUP (guide ANSSI OpenSSH) - anssi-harden.sh
+AllowGroups $SSH_GROUP"
+  ((DRY_RUN)) && return 0
+  if sshd -t; then
+    run systemctl reload ssh 2>/dev/null || run systemctl reload sshd
+    warn "TESTEZ une nouvelle connexion SSH avant de fermer la session en cours."
+  else
+    err "Configuration SSH invalide : restauration."; restore_file "$SSH_ALLOW_FILE"; return 1
+  fi
 }

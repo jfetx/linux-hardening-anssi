@@ -1,0 +1,3 @@
+# Forcer les fins de ligne Unix (LF) : un script bash en CRLF ne s'exécute pas sous Linux
+*.sh text eol=lf
+*.md text eol=lf
