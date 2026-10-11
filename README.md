@@ -5,7 +5,7 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.5-blue)
+![Version](https://img.shields.io/badge/version-v1.5.1-blue)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
@@ -196,7 +196,7 @@ Depuis Linux ou macOS : `ssh-copy-id <user>@<ip>`.
 ## 🔍 Étape 3 — Audit initial
 
 ```bash
-git clone --depth 1 --branch v1.5 https://github.com/jfetx/linux-hardening-anssi.git
+git clone --depth 1 --branch v1.5.1 https://github.com/jfetx/linux-hardening-anssi.git
 cd linux-hardening-anssi
 sudo bash anssi-audit.sh -o audit-0-initial-$(hostname).csv
 ```
@@ -405,6 +405,7 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.5.1** | R05 : `gcc-NN-base` (bibliothèque d'exécution) n'est plus pris pour un compilateur |
 | **v1.5** | Module `anssi-lib-renforce.sh`, niveau `-l renforce` : 12 mesures simples (R01–R12, dont 3 sensibles) + 8 points à étudier en contrôle seul (R20–R27) |
 | **v1.4.1** | M04 : test des snaps sur disque (la commande `snap` bloquait une fois snapd arrêté) ; sockets désactivés avant leurs services |
 | **v1.4** | Correction `unprivileged_bpf_disabled` (valeur exacte 1) ; M14 bannière légale ; I16 `AllowGroups` SSH (sensible) ; droits `sudoers.d` et cron ; SSH `MaxSessions`/`TCPKeepAlive` ; sysctl `ldisc_autoload`, `core_uses_pid` ; services SAN/PackageKit/thermald/snapd — 30 mesures |
