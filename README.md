@@ -9,10 +9,12 @@ Audit et durcissement d'Ubuntu (22.04 / 24.04 LTS) selon le guide **ANSSI-BP-028
 | `anssi-audit.sh` | Audit en lecture seule, tableau de conformité, export CSV |
 | `anssi-harden.sh` | Durcissement interactif, automatique ou par sélection d'IDs |
 
+28 mesures : M01–M13 (Minimal), I01–I15 (Intermédiaire).
+
 ## Utilisation
 
 ```bash
-git clone --depth 1 --branch v1.0 https://github.com/<utilisateur>/linux-hardening-anssi.git
+git clone --depth 1 --branch v1.3 https://github.com/<utilisateur>/linux-hardening-anssi.git
 cd linux-hardening-anssi
 
 sudo bash anssi-audit.sh -l minimal -o audit-$(hostname).csv   # état initial

@@ -676,7 +676,15 @@ apply_I07() {
   pkg_installed apparmor-utils || apt_install apparmor-utils || return 1
   run systemctl enable --now apparmor
   grep -q 'apparmor=0' /proc/cmdline && warn "apparmor=0 présent sur la ligne de commande noyau (GRUB) : à retirer."
-  info "Profils en complain : vérifier avec « aa-status » puis « aa-enforce /etc/apparmor.d/<profil> » après tests."
+  # Profils en mode complain -> enforce (fichier par fichier, avec confirmation)
+  local f
+  while IFS= read -r f; do
+    [[ -n $f ]] || continue
+    if confirm "Passer le(s) profil(s) de $(basename "$f") en mode enforce ?" o; then
+      run aa-enforce "$f"
+    fi
+  done < <(grep -lE 'flags=\([^)]*complain' /etc/apparmor.d/* 2>/dev/null)
+  info "Les profils « unconfined » d'Ubuntu 24.04 (espaces de noms utilisateur) sont normaux : à documenter."
 }
 
 # --- I08 : auditd ---------------------------------------------------------------
@@ -851,7 +859,7 @@ apply_I13() {
   return 0
 }
 
-# --- I14 : inventaire setuid/setgid (contrôle seul) --------------------------------
+# --- I14 : inventaire setuid/setgid (contrôle seul ; I15 retire les superflus) --------------------------------
 register I14 I "Fichiers" "Inventaire des exécutables setuid/setgid (à justifier)"
 check_I14() {
   local mp n=0 c
@@ -860,4 +868,54 @@ check_I14() {
   done
   DETAIL="$n fichier(s) — liste : find / -xdev -type f -perm /6000"
   return $WARN
+}
+
+# --- I15 : retrait des bits SUID/SGID superflus (dpkg-statoverride) ---------------
+# Format : "chemin|justification du retrait"
+SUID_REMOVE=(
+  "/usr/bin/su|root verrouillé : administration via sudo -i"
+  "/usr/bin/mount|montages réalisés par systemd ou root"
+  "/usr/bin/umount|montages réalisés par systemd ou root"
+  "/usr/bin/chfn|modification du GECOS inutile"
+  "/usr/bin/chsh|changement de shell inutile"
+  "/usr/bin/newgrp|mots de passe de groupe non utilisés"
+  "/usr/bin/gpasswd|mots de passe de groupe non utilisés"
+  "/usr/bin/chage|expiration gérée par l'administrateur"
+  "/usr/bin/expiry|expiration gérée par l'administrateur"
+  "/usr/lib/openssh/ssh-keysign|HostbasedAuthentication désactivée (M06)"
+)
+# Optionnel : conservé par défaut (utilisé par gvfs/sshfs/AppImage sur un poste graphique)
+SUID_OPTIONAL=("/usr/bin/fusermount3|montages FUSE inutiles sans interface graphique")
+
+has_special_bits() { [[ -e $1 ]] && [[ -n $(find "$1" -maxdepth 0 -perm /6000 2>/dev/null) ]]; }
+
+register I15 I "Fichiers" "Bits SUID/SGID retirés des exécutables non nécessaires (dpkg-statoverride)"
+check_I15() {
+  local e f bad=()
+  for e in "${SUID_REMOVE[@]}"; do f=${e%%|*}; has_special_bits "$f" && bad+=("$(basename "$f")"); done
+  DETAIL="SUID/SGID encore présents : $(summarize "${bad[@]}")"
+  ((${#bad[@]}==0)) && return $OK || return $KO
+}
+# Retire les bits de façon persistante (survit aux mises à jour du paquet)
+statoverride_strip() {
+  local f=$1 cur
+  cur=$(dpkg-statoverride --list "$f" 2>/dev/null)
+  [[ $cur == "root root 755 $f" ]] && return 0
+  [[ -n $cur ]] && run dpkg-statoverride --remove "$f"
+  run dpkg-statoverride --update --add root root 0755 "$f"
+}
+apply_I15() {
+  local e f why
+  for e in "${SUID_REMOVE[@]}"; do
+    f=${e%%|*}; why=${e#*|}
+    has_special_bits "$f" || continue
+    confirm "Retirer SUID/SGID de $f ($why) ?" o && statoverride_strip "$f"
+  done
+  for e in "${SUID_OPTIONAL[@]}"; do
+    f=${e%%|*}; why=${e#*|}
+    has_special_bits "$f" || continue
+    confirm "Retirer aussi SUID de $f ($why) ? À conserver sur un poste graphique." n && statoverride_strip "$f"
+  done
+  info "Exceptions enregistrées : dpkg-statoverride --list (à joindre au dossier)."
+  info "Tester ensuite : sudo -n true, passwd (en tant qu'utilisateur), connexion SSH."
 }
