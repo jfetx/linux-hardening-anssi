@@ -523,13 +523,42 @@ sysctl_apply() { # nom_du_tableau fichier
   run sysctl -q -p "$f"
 }
 
+# Supprime un ancien fichier sysctl (versions précédentes du script)
+remove_old_sysctl() { [[ -f $1 ]] || return 0; backup_file "$1"; run rm -f "$1"; }
+
+# apport (Ubuntu) remet fs.suid_dumpable=2 à chaque démarrage : on le désactive
+disable_apport() {
+  pkg_installed apport || return 0
+  info "apport détecté : il force fs.suid_dumpable=2 au démarrage, désactivation."
+  [[ -f /etc/default/apport ]] && set_kv /etc/default/apport enabled 0 "="
+  run systemctl disable --now apport.service 2>/dev/null
+  run sysctl -q -w fs.suid_dumpable=0
+}
+
 register I01 I "Noyau / réseau" "Paramètres réseau du noyau (redirections, routage source, rp_filter…)"
 check_I01() { sysctl_check SYSCTL_NET && return $OK || return $KO; }
-apply_I01() { sysctl_apply SYSCTL_NET /etc/sysctl.d/90-anssi-reseau.conf; }
+# NB : préfixe 99-zz pour passer APRÈS /usr/lib/sysctl.d/99-protect-links.conf (Ubuntu)
+apply_I01() {
+  remove_old_sysctl /etc/sysctl.d/90-anssi-reseau.conf
+  sysctl_apply SYSCTL_NET /etc/sysctl.d/99-zz-anssi-reseau.conf
+  # ufw réapplique /etc/ufw/sysctl.conf à chaque démarrage (log_martians=0 par défaut)
+  if [[ -f /etc/ufw/sysctl.conf ]] && grep -qE '^net/ipv4/conf/(all|default)/log_martians=0' /etc/ufw/sysctl.conf; then
+    if ((DRY_RUN)); then echo "    ${C_DIM}[simulation] /etc/ufw/sysctl.conf : log_martians=1${C_RST}"
+    else
+      backup_file /etc/ufw/sysctl.conf
+      sed -i -E 's#^(net/ipv4/conf/(all|default)/log_martians)=0#\1=1#' /etc/ufw/sysctl.conf
+      log "PARAM /etc/ufw/sysctl.conf : log_martians=1"
+    fi
+  fi
+}
 
 register I02 I "Noyau" "Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, protected_*…)"
 check_I02() { sysctl_check SYSCTL_KERN && return $OK || return $KO; }
-apply_I02() { sysctl_apply SYSCTL_KERN /etc/sysctl.d/91-anssi-noyau.conf; }
+apply_I02() {
+  remove_old_sysctl /etc/sysctl.d/91-anssi-noyau.conf
+  sysctl_apply SYSCTL_KERN /etc/sysctl.d/99-zz-anssi-noyau.conf
+  disable_apport
+}
 
 # --- I03 : modules noyau inutiles ----------------------------------------------
 MOD_BLACKLIST=(cramfs freevxfs jffs2 hfs hfsplus dccp sctp rds tipc firewire-core)
@@ -736,6 +765,7 @@ check_I11() {
 apply_I11() {
   write_file /etc/security/limits.d/50-anssi-core.conf 644 '* hard core 0'
   run sysctl -q -w fs.suid_dumpable=0
+  disable_apport
   if pkg_installed systemd-coredump; then
     write_file /etc/systemd/coredump.conf.d/50-anssi.conf 644 \
 '[Coredump]
