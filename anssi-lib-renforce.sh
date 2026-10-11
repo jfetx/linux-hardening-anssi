@@ -110,18 +110,19 @@ apply_R04() {
 }
 
 # --- R05 : absence de compilateurs ---------------------------------------------------
+# NB : gcc-NN-base est une bibliothèque d'exécution (requise par libgcc), pas un compilateur
 PKGS_COMPILERS=(build-essential gcc g++ clang tcc gfortran)
 register R05 R "Réduction de la surface" "Aucun compilateur installé (gcc, g++, clang…)"
 check_R05() {
   local p found=()
   for p in "${PKGS_COMPILERS[@]}"; do pkg_installed "$p" && found+=("$p"); done
-  found+=( $(dpkg-query -W -f='${Package} ${Status}\n' 'gcc-[0-9]*' 2>/dev/null | awk '/install ok installed/{print $1}') )
+  found+=( $(dpkg-query -W -f='${Package} ${Status}\n' 'gcc-[0-9]*' 2>/dev/null | awk '/install ok installed/ && $1 !~ /-base$/ {print $1}') )
   DETAIL="installés : $(summarize "${found[@]}")"
   ((${#found[@]}==0)) && return $OK || return $KO
 }
 apply_R05() {
   local p
-  for p in "${PKGS_COMPILERS[@]}" $(dpkg-query -W -f='${Package} ${Status}\n' 'gcc-[0-9]*' 2>/dev/null | awk '/install ok installed/{print $1}'); do
+  for p in "${PKGS_COMPILERS[@]}" $(dpkg-query -W -f='${Package} ${Status}\n' 'gcc-[0-9]*' 2>/dev/null | awk '/install ok installed/ && $1 !~ /-base$/ {print $1}'); do
     pkg_installed "$p" && confirm "Purger $p (vérifier qu'aucune application n'en dépend) ?" o && run apt-get purge -y "$p"
   done
   run apt-get autoremove -y
