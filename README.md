@@ -9,7 +9,7 @@
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
-![Mesures](https://img.shields.io/badge/mesures-30-success)
+![Mesures](https://img.shields.io/badge/mesures-42%20%2B%208%20%C3%A0%20%C3%A9tudier-success)
 
 </div>
 
@@ -20,12 +20,14 @@
 - [✨ En bref](#-en-bref)
 - [📦 Contenu du dépôt](#-contenu-du-dépôt)
 - [🧭 Démarche globale](#-démarche-globale)
+- [❓ Étape 0 — Questions à poser avant l'installation](#-étape-0--questions-à-poser-avant-linstallation)
 - [💽 Étape 1 — Installation et partitionnement](#-étape-1--installation-et-partitionnement)
 - [🔑 Étape 2 — Accès SSH par clé](#-étape-2--accès-ssh-par-clé)
 - [🔍 Étape 3 — Audit initial](#-étape-3--audit-initial)
 - [🔒 Étape 4 — Durcissement](#-étape-4--durcissement)
 - [✅ Étape 5 — Vérification après redémarrage](#-étape-5--vérification-après-redémarrage)
-- [📋 Liste des 28 mesures](#-liste-des-28-mesures)
+- [📋 Liste des mesures](#-liste-des-mesures)
+- [🐳 Docker et durcissement](#-docker-et-durcissement)
 - [⚠️ Pièges connus sur Ubuntu](#️-pièges-connus-sur-ubuntu)
 - [♻️ Sauvegardes et retour arrière](#️-sauvegardes-et-retour-arrière)
 - [🛠️ Dépannage](#️-dépannage)
@@ -75,6 +77,31 @@ flowchart LR
 ```
 
 > 📸 **Sur une VM** (Proxmox, VirtualBox…), prenez un **snapshot avant chaque étape** : un retour arrière prend alors quelques secondes.
+
+---
+
+## ❓ Étape 0 — Questions à poser avant l'installation
+
+> 🎯 **Une réponse manquante = un problème après le durcissement.** Ces questions se posent **avant** d'installer, idéalement lors d'une journée de cadrage.
+
+| Thème | Question | Pourquoi (mesure concernée) |
+| --- | --- | --- |
+| 🎚️ Niveau | Quel niveau ANSSI est attendu (Minimal, Intermédiaire, Renforcé) ? Un référentiel est-il imposé ? | Fixe le périmètre et la durée |
+| 📦 Applications | Quels logiciels et **dépendances** installer (paquets, versions, Python, Java, Node…) ? Qui les installe ? | `noexec` sur `/tmp` (I05), umask 027 (I10), paquets retirés (M03) |
+| 🐳 Conteneurs | Docker est-il utilisé ? Images disponibles sur un registre ou fournies en fichiers ? Versions figées ? | Partition dédiée, pare-feu (Docker contourne ufw), `ip_forward` (I01) |
+| 🗄️ Base de données | Quel moteur (SQL Server, PostgreSQL, MySQL) ? En conteneur ou sur l'hôte ? Volume de données prévu ? | Taille de `/srv` ou `/var/lib/docker` |
+| 🌐 Réseau | Ports à ouvrir ? Accès local uniquement ou depuis d'autres machines ? | Pare-feu (M05), publication des ports Docker |
+| 📴 Connexion | Poste connecté à Internet ou isolé en production ? | Tout doit être installé **avant** la déconnexion |
+| 🕐 Heure | Un serveur NTP interne sera-t-il disponible ? | Horodatage des journaux (M12) |
+| 🔄 Mises à jour | Automatiques ou gérées par le client ? | M02 : écart à justifier si désactivées |
+| 👥 Comptes | Combien d'administrateurs et d'utilisateurs ? Qui a besoin de SSH ? | sudo (I09), `AllowGroups` (I16), groupe `docker` |
+| 🔑 SSH | Accès distant nécessaire ? Depuis quel réseau ? | M06, I16, règle ufw limitée au réseau d'administration |
+| 🔌 Périphériques | Quels périphériques USB (souris, clavier, adaptateurs série, sondes) ? | Blocage du stockage USB (I04) |
+| 💻 Matériel | Modèle, UEFI/Secure Boot, TPM, **taille et type du disque** (NVMe/SATA) ? Portable ? | Partitionnement, Wi-Fi, fermeture du capot |
+| 🔐 Chiffrement | Chiffrement du disque exigé ? | Se décide **à l'installation** (LUKS) |
+| 🖥️ Interface | Interface graphique nécessaire ? | Ubuntu Server ou Desktop, `fusermount3` (I15) |
+
+> 📝 Toute réponse « non connue » devient une **hypothèse écrite** dans le bon de commande ou la documentation.
 
 ---
 
@@ -129,6 +156,58 @@ flowchart TB
     VG --> SW["💤 swap · 4 Go"]
     VG --> FREE["➕ libre · ~9 Go"]
 ```
+
+### 📏 Dimensionnement selon la taille du disque
+
+Schéma pour un **poste avec Docker et une base de données** (le cas le plus exigeant). Les capacités sont **réelles** : un disque « 256 Go » offre environ 238 Gio.
+
+| Volume | Options | 256 Go (~238 Gio) | 512 Go (~476 Gio) | 1 To (~931 Gio) |
+| --- | --- | --- | --- | --- |
+| 🥾 `/boot/efi` | `umask=0077` | 1 | 1 | 1 |
+| 🥾 `/boot` | `nodev,nosuid,noexec` | 2 | 2 | 2 |
+| 🌳 `/` | `defaults` | 30 | 40 | 50 |
+| 🏠 `/home` | `nodev,nosuid` | 10 | 20 | 40 |
+| 🗄️ `/var` | `nodev,nosuid` | 15 | 20 | 30 |
+| 📜 `/var/log` | `nodev,nosuid,noexec` | 10 | 20 | 30 |
+| 🕵️ `/var/log/audit` | `nodev,nosuid,noexec` | 5 | 10 | 15 |
+| 🧹 `/var/tmp` | `nodev,nosuid,noexec` | 5 | 10 | 15 |
+| 💤 swap | — | 8 | 16 | 16 |
+| 🐳 `/var/lib/docker` | `defaults` (voir ci-dessous) | 70 | 150 | 300 |
+| 🗃️ `/srv` (données, volumes BDD) | `nodev,nosuid,noexec` | 50 | 120 | 300 |
+| ➕ **Libre dans `vg0`** | — | **~32 (13 %)** | **~67 (14 %)** | **~132 (14 %)** |
+
+Repères de calcul :
+
+- **Garder 10 à 15 % libres** dans le groupe de volumes : un volume plein s'agrandit à chaud (`lvextend -r`), sans réinstaller.
+- **Swap** : 8 à 16 Gio suffisent sur un serveur sans mise en veille prolongée (hibernation).
+- **`/var/lib/docker`** : taille des images × 2 (mises à jour, couches) + marge. Une image SQL Server pèse ~1,5 Go, PostgreSQL ~0,4 Go.
+- **`/srv`** : volume de données de la base sur la durée de vie du poste × 2. **À demander au client** (Étape 0).
+- **Poste sans Docker ni base** : supprimer `/var/lib/docker` et `/srv`, et reporter l'espace sur l'espace libre ou `/var`.
+
+### 🐳 Cas particulier : poste avec Docker et base de données
+
+| Choix | Raison |
+| --- | --- |
+| **Volume dédié `/var/lib/docker`** | Les images et couches ne saturent pas `/var` (recommandation du CIS Docker Benchmark) |
+| `/var/lib/docker` en **`defaults`** | Docker gère ses propres montages (overlay) ; des options restrictives peuvent casser certains conteneurs. **À durcir seulement après tests** |
+| **Données de la base dans `/srv`** (volume *bind mount*) | Les données survivent à la suppression d'un conteneur, sont faciles à sauvegarder et peuvent porter `nodev,nosuid,noexec` |
+| Exemple | `docker run -v /srv/mssql:/var/opt/mssql …` ou `-v /srv/pgdata:/var/lib/postgresql/data …` |
+
+Lignes `fstab` supplémentaires :
+
+```bash
+add_opts /srv nodev,nosuid,noexec
+# /var/lib/docker reste en « defaults »
+```
+
+### 💻 Cas particulier : ordinateur portable utilisé comme serveur
+
+| Point | Action |
+| --- | --- |
+| Disque NVMe | Le disque s'appelle `nvme0n1` (partitions `nvme0n1p1`…), pas `sda` |
+| Fermeture du capot | `HandleLidSwitch=ignore` dans `/etc/systemd/logind.conf`, sinon le poste se met en veille |
+| Wi-Fi / Bluetooth | Désactiver s'ils ne servent pas (`rfkill block all`, pilotes interdits) |
+| Vol | Un portable se vole : sans chiffrement, le documenter comme **risque résiduel accepté** |
 
 ### Dans l'installateur Ubuntu Server (Subiquity)
 
@@ -274,9 +353,9 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 
 ---
 
-## 📋 Liste des 28 mesures
+## 📋 Liste des mesures
 
-### 🟦 Niveau Minimal (13)
+### 🟦 Niveau Minimal (14)
 
 | ID | Thème | Mesure | Correction |
 | --- | --- | --- | --- |
@@ -293,8 +372,9 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 | M11 | 📁 Fichiers | Aucun fichier sans propriétaire | 👁️ contrôle seul |
 | M12 | 🕐 Journalisation | Horloge synchronisée (NTP) | ✅ auto |
 | M13 | 🕐 Journalisation | Journal systemd persistant | ✅ auto |
+| M14 | 🕐 Journalisation | Bannière légale (`/etc/issue`, `/etc/issue.net`) | ✅ auto |
 
-### 🟪 Niveau Intermédiaire (15)
+### 🟪 Niveau Intermédiaire (16)
 
 | ID | Thème | Mesure | Correction |
 | --- | --- | --- | --- |
@@ -313,6 +393,7 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 | I13 | 👤 Comptes | Pas de mot de passe vide, pas d'UID 0 hors root | ✅ auto |
 | I14 | 📁 Fichiers | Inventaire setuid/setgid | 👁️ à justifier |
 | I15 | 📁 Fichiers | Bits SUID/SGID superflus retirés (`dpkg-statoverride`) | ✅ auto |
+| I16 | 🔑 SSH | Connexion SSH réservée au groupe `ssh-users` (`AllowGroups`) | 🚦 sensible |
 
 ### 🟥 Niveau Renforcé (`-l renforce`, depuis v1.5)
 
@@ -347,6 +428,37 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 | R25 | USBGuard | Inventaire des périphériques légitimes |
 | R26 | Chiffrement LUKS | Installation (phrase de passe ou TPM) |
 | R27 | UEFI + Secure Boot, IOMMU | Matériel et micrologiciel |
+
+---
+
+## 🐳 Docker et durcissement
+
+> 🔁 **Ordre d'installation** : Ubuntu → partitionnement → **Docker + applications + dépendances** → tests → durcissement → **tests à nouveau** → audit → déconnexion du réseau. Durcir avant d'installer les applications multiplie les problèmes.
+
+| Point | Risque | Solution |
+| --- | --- | --- |
+| 🔴 **Docker contourne ufw** | Un port publié (`-p 1433:1433`) est joignable depuis le réseau **même si ufw le bloque** : Docker insère ses règles iptables avant celles d'ufw | Publier sur `127.0.0.1:1433:1433` si l'accès est local, ou filtrer dans la chaîne `DOCKER-USER` |
+| 🟠 `ip_forward` | Docker en a besoin | Le script le conserve automatiquement si Docker est détecté (I01) : **installer Docker avant** |
+| 🟠 Groupe `docker` | Appartenir au groupe `docker` **équivaut à être root** | Réservé aux administrateurs |
+| 🟠 Images | En production hors ligne, une image manquante ne peut plus être téléchargée | Versions figées (pas de `latest`), copie de secours avec `docker save` |
+| 🟢 auditd | Pas de règles Docker par défaut | Surveiller `/usr/bin/dockerd`, `/etc/docker`, `/var/lib/docker`, `docker.sock` |
+| 🟢 Configuration du démon | Valeurs par défaut permissives | `/etc/docker/daemon.json` : `no-new-privileges`, `icc: false`, `live-restore`, limites de journaux |
+| 🟢 Modules noyau | Docker charge des modules réseau à la volée | Compatible Intermédiaire ; **incompatible avec R11** (blocage des modules) sauf préchargement |
+
+Exemple de `/etc/docker/daemon.json` :
+
+```json
+{
+  "no-new-privileges": true,
+  "icc": false,
+  "live-restore": true,
+  "userland-proxy": false,
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+```
+
+> ⚠️ `icc: false` coupe la communication entre conteneurs du réseau par défaut : à tester si l'application est composée de plusieurs conteneurs (préférer alors un réseau Docker dédié).
 
 ---
 
@@ -405,6 +517,7 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **docs** | README : questions préalables (Étape 0), dimensionnement 256 Go / 512 Go / 1 To, cas Docker + base de données, portables, section Docker |
 | **v1.5.1** | R05 : `gcc-NN-base` (bibliothèque d'exécution) n'est plus pris pour un compilateur |
 | **v1.5** | Module `anssi-lib-renforce.sh`, niveau `-l renforce` : 12 mesures simples (R01–R12, dont 3 sensibles) + 8 points à étudier en contrôle seul (R20–R27) |
 | **v1.4.1** | M04 : test des snaps sur disque (la commande `snap` bloquait une fois snapd arrêté) ; sockets désactivés avant leurs services |
