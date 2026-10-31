@@ -5,8 +5,8 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.7-blue)
-![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
+![Version](https://img.shields.io/badge/version-v1.8-blue)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
 ![Mesures](https://img.shields.io/badge/mesures-41%20%2B%207%20renforc%C3%A9%20%2B%208%20%C3%A0%20%C3%A9tudier-success)
@@ -574,6 +574,11 @@ Trois composants d'Ubuntu **réécrivent des paramètres du noyau au démarrage*
 Autres points utiles :
 
 - 🧷 **SUID** : `chmod u-s` est annulé à la prochaine mise à jour du paquet ; `dpkg-statoverride` est persistant. Liste des exceptions : `sudo dpkg-statoverride --list`.
+- 🦀 **Ubuntu 26.04 — sudo-rs** : `sudo` est par défaut **sudo-rs** (Rust). Testé (0.2.13) : `noexec`, `EXEC:`, `use_pty`, `umask`, `Defaults!commande`, alias, arguments explicites, `sudoedit` fonctionnent. **`requiretty` et `logfile` sont refusés (erreur de syntaxe, sudo inutilisable)** : I09/I21 ne les écrivent pas sous sudo-rs ; la journalisation passe par journald (`journalctl _COMM=sudo`). Prévoir deux écarts R39 justifiés. Retour à sudo classique : valider d'abord avec `visudo.ws -c`, puis `update-alternatives --set sudo /usr/bin/sudo.ws`.
+- 🗂️ **Ubuntu 26.04 — `/tmp`** est un tmpfs monté par `tmp.mount` (sans `noexec`) : I05 ajoute `noexec` par un drop-in systemd, pas par fstab.
+- 🔌 **Ubuntu 26.04 — `sshd-unix-local.socket`** (accès SSH local par socket Unix, mode 0666) : masqué par M04.
+- 💥 **Ubuntu 26.04 — kdump-tools** est actif et réserve de la mémoire (`crashkernel=`) : purgé par I11 (vidage mémoire = données sensibles).
+- ⚙️ **`kernel.perf_event_paranoid`** vaut 4 sur Ubuntu récent (plus strict que la valeur 2 du guide) : accepté comme conforme.
 - 🛡️ **AppArmor** : les ~89 profils « unconfined » d'Ubuntu 24.04 servent à autoriser les espaces de noms utilisateur ; ce n'est **pas** un mode dégradé, contrairement au mode « complain ».
 
 ---
@@ -614,6 +619,7 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.8** | **Ubuntu 26.04 et sudo-rs** : détection sudo-rs (I09/I21 sans `requiretty`/`logfile`, `Defaults!apt/apt-get/dpkg umask_override`, `visudo -c -f` compatible) ; M04 masque `sshd-unix-local.socket` et désactive cloud-init ; M09 `/etc/crypttab` 600 ; I05 `noexec` sur `/tmp` via drop-in `tmp.mount` ; I08 règles auditd Docker ; I11 purge kdump ; I13 `sync` en nologin ; I24 remontage APT fondé sur l'état réel ; I26 exclusions AIDE (Docker, journaux) ; `anssi-bp028-r80.sh` 1.2 : `perf_event_paranoid ≥ 2`, R79 dédoublonné par processus, remarques sudo-rs sur R39 |
 | **v1.7** | **Niveau Intermédiaire complet vis-à-vis de R1–R80** : 10 nouvelles mesures I17–I26 (options mémoire du noyau, IPv6, sessions inactives, faillock + historique, directives sudo, répertoires personnels, Secure Boot, options de montage + hidepid, `pam_namespace`, AIDE), M15 (dépôts APT) ; I01, I02, I13, M03, M10 complétés ; R02, R04, R07, R10, R12 déplacées vers l'Intermédiaire ; `anssi-bp028-r80.sh` 1.1 : écarts justifiés et attestations (`-j`) |
 | **v1.6** | Nouveau script `anssi-bp028-r80.sh` : vérification supplémentaire des 80 recommandations R1–R80 du guide (référentiel ComplianceAsCode `controls/anssi.yml`, adapté à Ubuntu), lecture seule, export CSV |
 | **docs** | README : questions préalables (Étape 0), dimensionnement 256 Go / 512 Go / 1 To, cas Docker + base de données, portables, section Docker |

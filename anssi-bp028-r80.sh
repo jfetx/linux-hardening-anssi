@@ -14,7 +14,7 @@
 #  Lecture seule : ne modifie rien. Complément indépendant de anssi-audit.sh.
 #  Code retour : 0 si plus rien n'est à traiter (KO, à vérifier, manuel non attesté), 1 sinon.
 # =============================================================================
-SCRIPT_VERSION=1.1
+SCRIPT_VERSION=1.2
 # Locale UTF-8 (alignement des colonnes accentuées) et sorties des commandes en anglais (analyse fiable)
 if locale -a 2>/dev/null | grep -qiE '^c\.utf-?8$'; then export LC_ALL=C.UTF-8; fi
 LEVEL=intermediaire ONLY="" CSV="" JFILE="" QUIET=0 VERBOSE=0 MAXD=6
@@ -528,8 +528,9 @@ chk_R8() {
 }
 chk_R9() {
   sysctl_set eq kernel.dmesg_restrict=1 kernel.kptr_restrict=2 kernel.pid_max=65536 \
-    kernel.perf_cpu_time_max_percent=1 kernel.perf_event_max_sample_rate=1 kernel.perf_event_paranoid=2 \
+    kernel.perf_cpu_time_max_percent=1 kernel.perf_event_max_sample_rate=1 \
     kernel.randomize_va_space=2 kernel.sysrq=0 kernel.unprivileged_bpf_disabled=1 kernel.panic_on_oops=1
+  chk_sysctl kernel.perf_event_paranoid 2 ge   # Ubuntu >= 24.04 : 4 (plus strict)
 }
 chk_R10() {
   local v; v=$(cat /proc/sys/kernel/modules_disabled 2>/dev/null)
@@ -747,10 +748,15 @@ chk_R38() {
 chk_R39() {
   needroot "lecture de /etc/sudoers" || return
   load_sudoers
-  local o um
+  local o um rs=0
+  [[ $(sudo -V 2>/dev/null | head -1) == sudo-rs* ]] && rs=1
   for o in noexec requiretty use_pty ignore_dot env_reset; do
-    sudo_flag "$o" && ok "Defaults $o" || ko "Defaults $o absent"
+    if sudo_flag "$o"; then ok "Defaults $o"
+    elif ((rs)) && [[ $o == requiretty ]]; then
+      ko "Defaults requiretty absent : directive non supportée par sudo-rs (erreur de syntaxe) → écart à justifier (compensé par use_pty + authentification + auditd)"
+    else ko "Defaults $o absent"; fi
   done
+  ((rs)) && note "sudo-rs : pas de « Defaults logfile » ; journalisation des commandes dans journald (COMMAND=) — journalctl _COMM=sudo"
   um=$(sudo_val umask)
   if [[ -n $um && $((8#$um)) -eq $((8#077)) ]]; then ok "Defaults umask=$um"; else ko "Defaults umask=0077 absent${um:+ (actuel : $um)}"; fi
 }
@@ -1143,11 +1149,12 @@ chk_R78() {
 }
 chk_R79() {
   load_listen
-  local i n=0 conf
+  local i n=0 conf seen=""
   for i in "${!L_PORT[@]}"; do
     is_loopback "${L_ADDR[i]}" && continue
     [[ ${L_PROTO[i]} == udp && ${L_PORT[i]} =~ ^(68|546)$ ]] && continue
     [[ -n ${L_PID[i]} ]] || continue
+    [[ $seen == *"|${L_PID[i]}|"* ]] && continue; seen+="|${L_PID[i]}|"
     ((n++))
     conf=$(cat "/proc/${L_PID[i]}/attr/apparmor/current" 2>/dev/null || cat "/proc/${L_PID[i]}/attr/current" 2>/dev/null)
     if [[ -z $conf || $conf == unconfined* ]]; then soft "${L_PROC[i]} (${L_PORT[i]}/${L_PROTO[i]}) non confiné par AppArmor"

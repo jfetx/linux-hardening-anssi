@@ -179,6 +179,12 @@ needs_forwarding() {
     || systemctl is-active -q libvirtd 2>/dev/null
 }
 
+# Implémentation de sudo active : « rs » (sudo-rs, défaut Ubuntu ≥ 25.10) ou « ws » (sudo classique)
+sudo_impl() { [[ $(sudo -V 2>/dev/null | head -1) == sudo-rs* ]] && echo rs || echo ws; }
+# Validation sudoers compatible sudo-rs et sudo.ws (sudo-rs ne connaît pas l'option -q)
+visudo_ok()     { visudo -c -f "$1" >/dev/null 2>&1; }
+visudo_all_ok() { visudo -c >/dev/null 2>&1; }
+
 # Réduit les espaces/tabulations multiples à un seul espace
 squash() { local -a a; read -ra a <<<"$1"; printf '%s' "${a[*]}"; }
 
@@ -265,11 +271,16 @@ svc_list() {
   fi
 }
 register M04 M "Réduction de la surface" "Services inutiles désactivés (avahi, cups, bluetooth, rpcbind, samba, iscsid, multipathd…)"
+# Unités générées (systemd ≥ 256) : accès SSH local par socket Unix, ouvert à tous (0666)
+gen_units() { systemctl is-active -q sshd-unix-local.socket 2>/dev/null && echo sshd-unix-local.socket; }
+cloudinit_on() { pkg_installed cloud-init && [[ ! -e /etc/cloud/cloud-init.disabled ]]; }
 check_M04() {
   local s found=()
   for s in $(svc_list); do
     [[ $(systemctl is-enabled "$s" 2>/dev/null) == enabled ]] && found+=("$s")
   done
+  for s in $(gen_units); do found+=("$s"); done
+  cloudinit_on && found+=("cloud-init")
   DETAIL="actifs : $(summarize "${found[@]}")"
   ((${#found[@]}==0)) && return $OK || return $KO
 }
@@ -282,6 +293,12 @@ apply_M04() {
       run systemctl disable --now "$s" && run systemctl mask "$s"
     fi
   done
+  for s in $(gen_units); do
+    confirm "Masquer $s (accès SSH local par socket Unix, inutile) ?" o && { run systemctl stop "$s"; run systemctl mask "$s"; }
+  done
+  if cloudinit_on && confirm "Désactiver cloud-init (configuration de VM cloud, inutile sur un poste) ?" o; then
+    write_file /etc/cloud/cloud-init.disabled 644 "# Désactivé par anssi-harden.sh (M04)"
+  fi
   return 0
 }
 
@@ -398,6 +415,7 @@ PERM_FILES=("/etc/passwd 644 root:root" "/etc/group 644 root:root"
             "/etc/sudoers 440 root:root" "/etc/ssh/sshd_config 600 root:root"
             "/boot/grub/grub.cfg 600 root:root"
             "/etc/sudoers.d 750 root:root" "/etc/crontab 600 root:root"
+            "/etc/crypttab 600 root:root"
             "/etc/cron.d 700 root:root" "/etc/cron.hourly 700 root:root"
             "/etc/cron.daily 700 root:root" "/etc/cron.weekly 700 root:root"
             "/etc/cron.monthly 700 root:root")
@@ -734,11 +752,19 @@ check_I05() {
   if findmnt -n /tmp >/dev/null 2>&1; then
     mount_has /tmp nodev nosuid || bad+=("/tmp(options)")
     mount_has /tmp noexec || bad+=("/tmp(noexec)")
+    tmp_persist_noexec || bad+=("/tmp(noexec non persistant)")
   else
     bad+=("/tmp(non séparé)")
   fi
   DETAIL="écarts : $(summarize "${bad[@]}")"
   ((${#bad[@]}==0)) && return $OK || return $KO
+}
+TMP_DROPIN=/etc/systemd/system/tmp.mount.d/50-anssi.conf
+# /tmp monté par l'unité systemd tmp.mount (défaut Ubuntu ≥ 25.10) et non par fstab ?
+tmp_by_unit() { ! grep -qE '^[[:space:]]*[^#[:space:]]+[[:space:]]+/tmp[[:space:]]' /etc/fstab && systemctl is-active -q tmp.mount 2>/dev/null; }
+tmp_persist_noexec() {
+  grep -qsE '^[[:space:]]*[^#[:space:]]+[[:space:]]+/tmp[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]*noexec' /etc/fstab && return 0
+  grep -qs 'noexec' "$TMP_DROPIN"
 }
 apply_I05() {
   if grep -qE '^[[:space:]]*[^#[:space:]]+[[:space:]]+/dev/shm[[:space:]]' /etc/fstab; then
@@ -747,7 +773,19 @@ apply_I05() {
     append_line /etc/fstab "tmpfs /dev/shm tmpfs defaults,rw,nodev,nosuid,noexec 0 0"
     run mount -o remount,nodev,nosuid,noexec /dev/shm
   fi
-  if grep -qE '^[[:space:]]*[^#[:space:]]+[[:space:]]+/tmp[[:space:]]' /etc/fstab; then
+  if tmp_by_unit; then
+    # Drop-in : on conserve les options de l'unité livrée et on ajoute noexec
+    local o; o=$(systemctl show -P Options tmp.mount 2>/dev/null)
+    o=${o:-mode=1777,strictatime,nosuid,nodev}
+    [[ ,$o, == *,noexec,* ]] || o+=",noexec"
+    if confirm "Ajouter noexec à /tmp (unité systemd tmp.mount, drop-in) ?" o; then
+      write_file "$TMP_DROPIN" 644 "[Mount]
+# /tmp : options de l'unité d'origine + noexec (ANSSI-BP-028 R28) - anssi-harden.sh
+Options=${o//%/%%}"
+      run systemctl daemon-reload
+      run mount -o remount,noexec /tmp
+    fi
+  elif grep -qE '^[[:space:]]*[^#[:space:]]+[[:space:]]+/tmp[[:space:]]' /etc/fstab; then
     warn "/tmp déjà déclaré dans /etc/fstab : ajouter nodev,nosuid(,noexec) manuellement."
   elif confirm "Monter /tmp en tmpfs (nodev,nosuid) au prochain démarrage ?" o; then
     local opt="defaults,rw,nodev,nosuid,mode=1777"
@@ -801,6 +839,7 @@ check_I08() {
   pkg_installed auditd || { DETAIL="auditd absent"; return $KO; }
   systemctl is-active -q auditd 2>/dev/null || { DETAIL="auditd installé mais inactif"; return $KO; }
   [[ -f $AUDIT_RULES ]] || { DETAIL="actif, règles ANSSI absentes"; return $WARN; }
+  if command -v dockerd >/dev/null 2>&1 && [[ ! -f $AUDIT_DOCKER ]]; then DETAIL="Docker présent, règles auditd Docker absentes"; return $WARN; fi
   DETAIL="actif, $(auditctl -l 2>/dev/null | grep -vc '^No rules') règle(s) chargée(s)"
   return $OK
 }
@@ -836,31 +875,54 @@ apply_I08() {
   fi
   rules+=$'\n## Pour figer les règles jusqu\'au redémarrage, ajouter : -e 2'
   write_file "$AUDIT_RULES" 640 "$rules"
+  docker_audit_rules
   run systemctl enable --now auditd
   run augenrules --load
 }
 
+# Règles Docker (CIS Docker Benchmark 1.1.x) : uniquement pour les chemins présents
+AUDIT_DOCKER=/etc/audit/rules.d/55-anssi-docker.rules
+DOCKER_AUDIT_PATHS=(/usr/bin/dockerd /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc
+  /usr/sbin/runc /var/lib/docker /etc/docker /etc/docker/daemon.json /etc/containerd/config.toml
+  /etc/default/docker /etc/sysconfig/docker /usr/lib/systemd/system/docker.service
+  /usr/lib/systemd/system/docker.socket /lib/systemd/system/docker.service /lib/systemd/system/docker.socket
+  /run/containerd)
+docker_audit_rules() {
+  command -v dockerd >/dev/null 2>&1 || return 0
+  local p r="## Docker (CIS Docker Benchmark 1.1.x) - générées par anssi-harden.sh"
+  for p in "${DOCKER_AUDIT_PATHS[@]}"; do [[ -e $p ]] && r+=$'\n'"-w $p -p rwxa -k docker"; done
+  write_file "$AUDIT_DOCKER" 640 "$r"
+}
+
 # --- I09 : sudo -----------------------------------------------------------------
 SUDO_FILE=/etc/sudoers.d/50-anssi
-register I09 I "Comptes" "sudo durci (use_pty, journal dédié, délai, essais limités)"
+register I09 I "Comptes" "sudo durci (use_pty, journal dédié ou journald, délai, essais limités)"
 check_I09() {
   local all members
   all=$(cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null)
   members=$(getent group sudo | cut -d: -f4)
-  DETAIL="membres du groupe sudo : ${members:-aucun}"
-  grep -qE '^Defaults.*use_pty' <<<"$all" && grep -qE '^Defaults.*logfile' <<<"$all" && return $OK
+  DETAIL="$(sudo -V 2>/dev/null | head -1) ; membres du groupe sudo : ${members:-aucun}"
+  grep -qE '^Defaults.*use_pty' <<<"$all" || return $KO
+  grep -qE '^Defaults.*passwd_tries' <<<"$all" || return $KO
+  # sudo-rs : pas de directive logfile, les commandes sont journalisées par journald (COMMAND=)
+  [[ $(sudo_impl) == rs ]] && { DETAIL+=" ; journal : journald (sudo-rs)"; return $OK; }
+  grep -qE '^Defaults.*logfile' <<<"$all" && return $OK
   return $KO
 }
 apply_I09() {
   local content tmp
   content='# Durcissement sudo (ANSSI-BP-028) - généré par anssi-harden.sh
 Defaults use_pty
-Defaults logfile="/var/log/sudo.log"
 Defaults !visiblepw
 Defaults timestamp_timeout=5
 Defaults passwd_tries=3'
+  if [[ $(sudo_impl) == rs ]]; then
+    content+=$'\n# sudo-rs : la directive logfile n\'existe pas, commandes journalisées par journald (journalctl _COMM=sudo)'
+  else
+    content+=$'\nDefaults logfile="/var/log/sudo.log"'
+  fi
   tmp=$(mktemp); printf '%s\n' "$content" > "$tmp"
-  if ! visudo -cqf "$tmp"; then err "Syntaxe sudoers invalide, abandon."; rm -f "$tmp"; return 1; fi
+  if ! visudo_ok "$tmp"; then err "Syntaxe sudoers invalide, abandon."; rm -f "$tmp"; return 1; fi
   rm -f "$tmp"
   write_file "$SUDO_FILE" 440 "$content"
   info "Revoir les membres du groupe sudo : $(getent group sudo | cut -d: -f4)"
@@ -889,9 +951,12 @@ check_I11() {
     grep -hqE '^Storage=none' /etc/systemd/coredump.conf /etc/systemd/coredump.conf.d/*.conf 2>/dev/null || bad+=("systemd-coredump")
   fi
   apport_active && bad+=("apport actif")
+  kdump_on && bad+=("kdump (vidage mémoire du noyau)")
   DETAIL="écarts : $(summarize "${bad[@]}")"
   ((${#bad[@]}==0)) && return $OK || return $KO
 }
+# kdump : copie de toute la mémoire du noyau en cas de crash (secrets) + RAM réservée (crashkernel)
+kdump_on() { pkg_installed kdump-tools || grep -q 'crashkernel=' /proc/cmdline; }
 apply_I11() {
   write_file /etc/security/limits.d/50-anssi-core.conf 644 '* hard core 0'
   run sysctl -q -w fs.suid_dumpable=0
@@ -903,6 +968,13 @@ Storage=none
 ProcessSizeMax=0'
   fi
   info "fs.suid_dumpable est rendu persistant par la mesure I02."
+  if kdump_on && confirm "Supprimer kdump (vidages mémoire du noyau, RAM réservée par crashkernel) ?" o; then
+    local p pk=()
+    for p in kdump-tools linux-crashdump makedumpfile; do pkg_installed "$p" && pk+=("$p"); done
+    ((${#pk[@]})) && run apt-get purge -y "${pk[@]}"
+    run update-grub
+    grep -q 'crashkernel=' /proc/cmdline && REBOOT_NEEDED=1
+  fi
 }
 
 # --- I12 : mot de passe GRUB (sensible) ------------------------------------------
@@ -942,7 +1014,7 @@ EOF"
 
 # --- I13 : comptes --------------------------------------------------------------
 register I13 I "Comptes" "Pas de mot de passe vide ni d'UID 0 hors root ; comptes de service sans shell ni mot de passe (R34)"
-sys_with_shell() { awk -F: '($3<1000 || $3==65534) && $1!="root" && $7!~/(nologin|false|sync|shutdown|halt)$/ {print $1}' /etc/passwd; }
+sys_with_shell() { awk -F: '($3<1000 || $3==65534) && $1!="root" && $7!~/(nologin|false)$/ {print $1}' /etc/passwd; }
 sys_with_pw() { # comptes de service dont le mot de passe est utilisable
   local u
   for u in $(awk -F: '($3<1000 || $3==65534) && $1!="root" {print $1}' /etc/passwd); do
@@ -1229,13 +1301,16 @@ Password-Initial:
 SUDO_STRICT_FILE=/etc/sudoers.d/51-anssi-directives
 SUDO_ADMIN_FILE=/etc/sudoers.d/99-zz-anssi-admins   # lu en dernier : sa règle l'emporte
 SUDO_DIRECTIVES=(noexec requiretty use_pty ignore_dot env_reset umask=0077)
+# sudo-rs ne prend pas en charge requiretty (erreur de syntaxe) : écart R39 à justifier
+sudo_directives() { local d; for d in "${SUDO_DIRECTIVES[@]}"; do [[ $(sudo_impl) == rs && $d == requiretty ]] && continue; echo "$d"; done; }
 sudo_defaults() { cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -E '^[[:space:]]*Defaults[[:space:]]' | sed -E 's/^[[:space:]]*Defaults[[:space:]]+//; s/[[:space:]]*=[[:space:]]*/=/g' | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
-register I21 I "Comptes" "sudo : noexec, requiretty, umask 0077, ignore_dot ; EXEC réservé aux administrateurs (R39, R41)" 1
+register I21 I "Comptes" "sudo : noexec, requiretty (sudo.ws), umask 0077, ignore_dot ; EXEC réservé aux administrateurs (R39, R41)" 1
 check_I21() {
   local d o bad=()
   d=$(sudo_defaults)
-  for o in "${SUDO_DIRECTIVES[@]}"; do grep -qx -- "$o" <<<"$d" || bad+=("$o"); done
+  for o in $(sudo_directives); do grep -qx -- "$o" <<<"$d" || bad+=("$o"); done
   DETAIL="directives manquantes : $(summarize "${bad[@]}")"
+  [[ $(sudo_impl) == rs ]] && DETAIL+=" (sudo-rs : requiretty non pris en charge, écart R39)"
   ((${#bad[@]} == 0)) && return $OK || return $KO
 }
 apply_I21() {
@@ -1245,21 +1320,25 @@ apply_I21() {
   warn "Toute autre règle sudo (ex. 90-cloud-init-users) perdra la possibilité de lancer des sous-processus."
   confirm "Appliquer les directives sudo ?" o || return 0
   content="# Directives sudo (ANSSI-BP-028 R39) - anssi-harden.sh"
-  for o in "${SUDO_DIRECTIVES[@]}"; do content+=$'\n'"Defaults $o"; done
-  content+=$'\n'"# root (scripts, cron, unités systemd utilisant sudo -u) n'a pas de terminal"
-  content+=$'\n'"Defaults:root !requiretty"
+  for o in $(sudo_directives); do content+=$'\n'"Defaults $o"; done
+  if [[ $(sudo_impl) == ws ]]; then
+    content+=$'\n'"# root (scripts, cron, unités systemd utilisant sudo -u) n'a pas de terminal"
+    content+=$'\n'"Defaults:root !requiretty"
+  else
+    content+=$'\n'"# sudo-rs : requiretty non pris en charge (écart R39 justifié : use_pty + authentification + auditd)"
+  fi
   content+=$'\n'"# Gestion des paquets avec l'umask standard (fichiers de configuration lisibles par les services)"
-  content+=$'\n'"Defaults!/usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg umask=0022, umask_override"
+  for o in /usr/bin/apt /usr/bin/apt-get /usr/bin/dpkg; do content+=$'\n'"Defaults!$o umask=0022, umask_override"; done
   tmpd=$(mktemp -d)
   printf '%s\n' "$content" >"$tmpd/a"
   printf '%s\n' "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)" "%$grp ALL=(ALL:ALL) EXEC: ALL" >"$tmpd/b"
-  if ! visudo -cqf "$tmpd/a" || ! visudo -cqf "$tmpd/b"; then err "Syntaxe sudoers invalide, abandon."; rm -rf "$tmpd"; return 1; fi
+  if ! visudo_ok "$tmpd/a" || ! visudo_ok "$tmpd/b"; then err "Syntaxe sudoers invalide, abandon."; rm -rf "$tmpd"; return 1; fi
   rm -rf "$tmpd"
   write_file "$SUDO_STRICT_FILE" 440 "$content"
   write_file "$SUDO_ADMIN_FILE" 440 "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)
 %$grp ALL=(ALL:ALL) EXEC: ALL"
   ((DRY_RUN)) && return 0
-  if ! visudo -cq; then
+  if ! visudo_all_ok; then
     err "Configuration sudo globale invalide : restauration."
     restore_file "$SUDO_STRICT_FILE"; restore_file "$SUDO_ADMIN_FILE"; return 1
   fi
@@ -1363,12 +1442,23 @@ apply_I24() {
   var_needs_exec && warn "Docker sans volume /var/lib/docker dédié : /var reste sans noexec (écart à documenter)."
   # Hook APT : dpkg exécute ses scripts depuis /var/lib/dpkg et peut utiliser /tmp, /var/tmp
   write_file "$APT_REMOUNT_HELPER" 755 '#!/bin/sh
-# Remonte temporairement en « exec » les partitions déclarées noexec pendant dpkg (ANSSI-BP-028 R28)
+# Remonte temporairement en « exec » les partitions noexec pendant dpkg (ANSSI-BP-028 R28)
 # Usage : anssi-apt-remount exec|noexec  - généré par anssi-harden.sh
-for m in /var /tmp /var/tmp; do
-  awk -v m="$m" '"'"'$1 !~ /^#/ && $2 == m && $4 ~ /(^|,)noexec(,|$)/ {f=1} END {exit !f}'"'"' /etc/fstab || continue
-  mount -o remount,"$1" "$m" 2>/dev/null
-done
+# exec   : remonte en exec les points actuellement noexec et les mémorise
+# noexec : remet noexec sur les points mémorisés (fstab ou unité tmp.mount)
+L=/run/anssi-apt-remount.list
+case "$1" in
+  exec)
+    : > "$L"
+    for m in /var /tmp /var/tmp; do
+      findmnt -no OPTIONS "$m" 2>/dev/null | tr , "\n" | grep -qx noexec || continue
+      mount -o remount,exec "$m" 2>/dev/null && echo "$m" >> "$L"
+    done ;;
+  noexec)
+    [ -f "$L" ] || exit 0
+    while read -r m; do mount -o remount,noexec "$m" 2>/dev/null; done < "$L"
+    rm -f "$L" ;;
+esac
 exit 0'
   write_file "$APT_REMOUNT_CONF" 644 "// Partitions noexec remontées en exec pendant dpkg (ANSSI-BP-028 R28) - anssi-harden.sh
 DPkg::Pre-Invoke {\"$APT_REMOUNT_HELPER exec || true\";};
@@ -1431,6 +1521,13 @@ Session:
 
 # --- I26 : surveillance d'intégrité des fichiers (R79) -----------------------------------
 register I26 I "Journalisation" "Surveillance d'intégrité des fichiers (AIDE : base de référence + contrôle quotidien — R79)"
+AIDE_EXCL=/etc/aide/aide.conf.d/99_anssi_exclusions
+AIDE_EXCL_PATHS=(/var/lib/docker /var/lib/containerd /run/docker /var/lib/aide /var/log/journal /opt/fichetconnect/docker/logs)
+aide_exclusions() {
+  local p r="# Exclusions générées par anssi-harden.sh (données vivantes : faux positifs)"
+  for p in "${AIDE_EXCL_PATHS[@]}"; do r+=$'\n'"!${p}"; done
+  write_file "$AIDE_EXCL" 644 "$r"
+}
 aide_timer_on() { systemctl is-enabled -q dailyaidecheck.timer 2>/dev/null || [[ -x /etc/cron.daily/aide ]]; }
 check_I26() {
   pkg_installed aide || { DETAIL="AIDE absent"; return $KO; }
@@ -1442,6 +1539,7 @@ apply_I26() {
   info "À faire EN DERNIER : la base de référence doit refléter le poste durci. À régénérer après chaque mise à jour validée."
   confirm "Installer AIDE et créer la base de référence (plusieurs minutes) ?" o || return 0
   pkg_installed aide || apt_install aide aide-common || return 1
+  { [[ -d /etc/aide/aide.conf.d ]] || ((DRY_RUN)); } && aide_exclusions
   run aideinit -y -f
   if systemctl list-unit-files dailyaidecheck.timer >/dev/null 2>&1; then run systemctl enable --now dailyaidecheck.timer; fi
   info "Contrôle manuel : sudo aide --config /etc/aide/aide.conf --check"
