@@ -12,9 +12,11 @@
 #                  0=CONFORME 1=NON CONFORME 2=À VÉRIFIER 3=NON APPLICABLE
 #    apply_<ID>  : (optionnelle) correction. Absente => mesure manuelle.
 #
-#  NB : la colonne « Thème » regroupe les mesures par chapitre du guide ; la
-#       correspondance avec les numéros Rxx du guide est à reporter dans la
-#       documentation de livraison.
+#  Depuis v1.7, le niveau Intermédiaire couvre toutes les recommandations
+#  automatisables des niveaux Minimal + Intermédiaire du guide (R1–R80, d'après
+#  ComplianceAsCode). La correspondance mesure ↔ Rxx figure dans la description
+#  de chaque mesure ; anssi-bp028-r80.sh vérifie le résultat recommandation par
+#  recommandation et gère les écarts justifiés.
 # =============================================================================
 
 export LC_ALL=C.UTF-8          # sorties des outils (ufw, sshd…) non traduites
@@ -177,6 +179,9 @@ needs_forwarding() {
     || systemctl is-active -q libvirtd 2>/dev/null
 }
 
+# Réduit les espaces/tabulations multiples à un seul espace
+squash() { local -a a; read -ra a <<<"$1"; printf '%s' "${a[*]}"; }
+
 # Remplissage à largeur fixe compatible UTF-8 (printf compte les octets)
 pad() { local s=${1:0:$2}; printf '%s%*s' "$s" $(( $2 - ${#s} )) ""; }
 
@@ -224,9 +229,11 @@ APT::Periodic::Unattended-Upgrade "1";'
 }
 
 # --- M03 : paquets obsolètes ---------------------------------------------------
-PKGS_UNWANTED=(telnet inetutils-telnet telnetd rsh-client rsh-server nis talk talkd
-               xinetd tftp tftp-hpa tftpd-hpa ftp vsftpd)
-register M03 M "Réduction de la surface" "Absence de paquets réseau obsolètes (telnet, rsh, nis, tftp, ftp…)"
+PKGS_UNWANTED=(telnet inetutils-telnet telnetd inetutils-telnetd rsh-client rsh-server
+               rsh-redone-client rsh-redone-server nis ypserv talk talkd inetutils-talk
+               inetutils-talkd xinetd tftp tftpd tftp-hpa tftpd-hpa ftp vsftpd
+               isc-dhcp-server kea kea-dhcp4-server sendmail sendmail-bin)
+register M03 M "Réduction de la surface" "Absence de paquets réseau obsolètes (telnet, rsh, nis, tftp, ftp, serveur DHCP, sendmail… — R62)"
 check_M03() {
   local p found=()
   for p in "${PKGS_UNWANTED[@]}"; do pkg_installed "$p" && found+=("$p"); done
@@ -415,22 +422,33 @@ apply_M09() {
 }
 
 # --- M10 : répertoires accessibles en écriture à tous --------------------------
-register M10 M "Fichiers" "Sticky bit sur tous les répertoires accessibles en écriture à tous"
+register M10 M "Fichiers" "Sticky bit sur les répertoires inscriptibles par tous, aucun fichier inscriptible par tous (R54)"
 find_ww_dirs() {
   local mp
-  for mp in $(local_mounts); do
+  for mp in $(local_mounts) /tmp /var/tmp /dev/shm; do
     find "$mp" -xdev -type d -perm -0002 ! -perm -1000 -print0 2>/dev/null
   done
 }
+find_ww_files() {
+  local mp
+  for mp in $(local_mounts) /tmp /var/tmp /dev/shm; do
+    find "$mp" -xdev -path /var/lib/docker -prune -o -type f -perm -0002 -print0 2>/dev/null
+  done
+}
 check_M10() {
-  local l=()
+  local l=() f=()
   mapfile -d '' -t l < <(find_ww_dirs)
-  DETAIL="sans sticky bit : $(summarize "${l[@]}")"
-  ((${#l[@]}==0)) && return $OK || return $KO
+  mapfile -d '' -t f < <(find_ww_files)
+  DETAIL="répertoires sans sticky bit : $(summarize "${l[@]}") ; fichiers inscriptibles par tous : $(summarize "${f[@]}")"
+  ((${#l[@]}==0 && ${#f[@]}==0)) && return $OK || return $KO
 }
 apply_M10() {
   local d
   while IFS= read -r -d '' d; do run chmod +t "$d"; done < <(find_ww_dirs)
+  while IFS= read -r -d '' d; do
+    confirm "Retirer l'écriture pour tous sur $d ?" o && run chmod o-w "$d"
+  done < <(find_ww_files)
+  return 0
 }
 
 # --- M11 : fichiers sans propriétaire (contrôle seul) --------------------------
@@ -499,6 +517,39 @@ apply_M14() {
   write_file /etc/issue.net 644 "$BANNER_TEXT"
 }
 
+# --- M15 : dépôts APT officiels et signés (contrôle seul) ------------------------
+register M15 M "Mises à jour" "Dépôts APT officiels et signés ; dépôts tiers à justifier (R59)"
+apt_source_uris() { # une ligne « option|uri » par source active
+  local f st line
+  while IFS= read -r line; do
+    line=${line%%#*}
+    [[ $line =~ ^[[:space:]]*deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?([^[:space:]]+) ]] && echo "${BASH_REMATCH[2]}|${BASH_REMATCH[3]}"
+  done < <(cat /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null)
+  for f in /etc/apt/sources.list.d/*.sources; do
+    [[ -r $f ]] || continue
+    while IFS= read -r -d '' st; do
+      grep -qiE '^Enabled:[[:space:]]*no' <<<"$st" && continue
+      local t=""; grep -qiE '^Trusted:[[:space:]]*yes' <<<"$st" && t="trusted=yes"
+      grep -iE '^URIs:' <<<"$st" | cut -d: -f2- | tr ' ' '\n' | sed '/^$/d;s/^/'"$t"'|/'
+    done < <(awk 'BEGIN{RS=""; ORS="\0"} {print}' "$f")
+  done
+}
+check_M15() {
+  local e opt uri host bad=() third=()
+  while IFS='|' read -r opt uri; do
+    [[ -z $uri ]] && continue
+    [[ $opt == *trusted=yes* || $opt == *allow-insecure=yes* ]] && bad+=("$uri")
+    host=${uri#*://}; host=${host%%/*}
+    [[ $host =~ (^|\.)(archive|security|ports|esm|old-releases)\.ubuntu\.com$ ]] || third+=("$host")
+  done < <(apt_source_uris | sort -u)
+  if apt-config dump 2>/dev/null | grep -qiE '(AllowUnauthenticated|AllowInsecureRepositories) "(true|1)"'; then bad+=("apt.conf:non-authentifié"); fi
+  mapfile -t third < <(printf '%s\n' "${third[@]}" | sed '/^$/d' | sort -u)
+  DETAIL="non signés : $(summarize "${bad[@]}") ; tiers à justifier : $(summarize "${third[@]}")"
+  ((${#bad[@]})) && return $KO
+  ((${#third[@]})) && return $WARN
+  return $OK
+}
+
 # =============================================================================
 #  NIVEAU INTERMÉDIAIRE
 # =============================================================================
@@ -519,6 +570,10 @@ declare -A SYSCTL_NET=(
   [net.ipv4.conf.all.log_martians]=1          [net.ipv4.conf.default.log_martians]=1
   [net.ipv4.icmp_echo_ignore_broadcasts]=1    [net.ipv4.icmp_ignore_bogus_error_responses]=1
   [net.ipv4.tcp_syncookies]=1                 [net.ipv4.tcp_rfc1337]=1
+  [net.ipv4.conf.all.accept_local]=0          [net.ipv4.conf.all.route_localnet]=0
+  [net.ipv4.conf.all.shared_media]=0          [net.ipv4.conf.default.shared_media]=0
+  [net.ipv4.conf.all.arp_filter]=1            [net.ipv4.conf.all.arp_ignore]=2
+  [net.ipv4.conf.all.drop_gratuitous_arp]=1   [net.ipv4.ip_local_port_range]="32768 65535"
   [net.ipv6.conf.all.accept_redirects]=0      [net.ipv6.conf.default.accept_redirects]=0
   [net.ipv6.conf.all.accept_source_route]=0   [net.ipv6.conf.default.accept_source_route]=0
 )
@@ -531,6 +586,9 @@ declare -A SYSCTL_KERN=(
   [fs.protected_symlinks]=1         [fs.protected_hardlinks]=1
   [fs.protected_fifos]=2            [fs.protected_regular]=2
   [dev.tty.ldisc_autoload]=0       [kernel.core_uses_pid]=1
+  [kernel.pid_max]=65536            [kernel.panic_on_oops]=1
+  [kernel.perf_cpu_time_max_percent]=1  [kernel.perf_event_max_sample_rate]=1
+  [vm.mmap_min_addr]=65536
 )
 
 # Clé à ignorer dans le contexte du poste ?
@@ -542,6 +600,7 @@ sysctl_check() { # nom_du_tableau
   for k in "${!_arr[@]}"; do
     sysctl_skip "$k" && continue
     cur=$(sysctl -n "$k" 2>/dev/null) || continue        # clé absente du noyau
+    cur=$(squash "$cur")                                  # « 32768<TAB>65535 » -> « 32768 65535 »
     want=${_arr[$k]}
     if [[ -n ${SYSCTL_GE[$k]:-} ]]; then
       ((cur >= want)) || bad+=("$k=$cur")
@@ -583,7 +642,7 @@ disable_apport() {
   run sysctl -q -w fs.suid_dumpable=0
 }
 
-register I01 I "Noyau / réseau" "Paramètres réseau du noyau (redirections, routage source, rp_filter…)"
+register I01 I "Noyau / réseau" "Paramètres réseau IPv4 du noyau (redirections, routage source, ARP, rp_filter… — R12)"
 check_I01() {
   sysctl_check SYSCTL_NET || return $KO
   # Persistance : fichier ANSSI présent et ufw ne remet pas log_martians à 0 au démarrage
@@ -608,7 +667,7 @@ apply_I01() {
   fi
 }
 
-register I02 I "Noyau" "Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, protected_*…)"
+register I02 I "Noyau" "Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, perf, pid_max, protected_*… — R9, R11, R14)"
 apport_active() { pkg_installed apport && systemctl is-enabled -q apport.service 2>/dev/null; }
 check_I02() {
   sysctl_check SYSCTL_KERN || return $KO
@@ -882,15 +941,21 @@ EOF"
 }
 
 # --- I13 : comptes --------------------------------------------------------------
-register I13 I "Comptes" "Pas de mot de passe vide, pas d'UID 0 hors root, comptes système sans shell"
+register I13 I "Comptes" "Pas de mot de passe vide ni d'UID 0 hors root ; comptes de service sans shell ni mot de passe (R34)"
+sys_with_shell() { awk -F: '($3<1000 || $3==65534) && $1!="root" && $7!~/(nologin|false|sync|shutdown|halt)$/ {print $1}' /etc/passwd; }
+sys_with_pw() { # comptes de service dont le mot de passe est utilisable
+  local u
+  for u in $(awk -F: '($3<1000 || $3==65534) && $1!="root" {print $1}' /etc/passwd); do
+    awk -F: -v u="$u" '$1==u && $2!="" && $2!~/^[!*]/ {f=1} END{exit !f}' /etc/shadow 2>/dev/null && echo "$u"
+  done
+}
 check_I13() {
-  local empty uid0 syssh
+  local empty uid0 syssh syspw
   empty=$(awk -F: '($2==""){print $1}' /etc/shadow 2>/dev/null | xargs)
   uid0=$(awk -F: '($3==0 && $1!="root"){print $1}' /etc/passwd | xargs)
-  syssh=$(awk -F: '($3<1000 && $1!="root" && $7!~/(nologin|false|sync|shutdown|halt)$/){print $1}' /etc/passwd | xargs)
-  DETAIL="mdp vide: ${empty:-aucun} | UID0: ${uid0:-aucun} | système avec shell: ${syssh:-aucun}"
-  [[ -n $empty || -n $uid0 ]] && return $KO
-  [[ -n $syssh ]] && return $WARN
+  syssh=$(sys_with_shell | xargs); syspw=$(sys_with_pw | xargs)
+  DETAIL="mdp vide: ${empty:-aucun} | UID0: ${uid0:-aucun} | service avec shell: ${syssh:-aucun} | service avec mdp: ${syspw:-aucun}"
+  [[ -n $empty || -n $uid0 || -n $syssh || -n $syspw ]] && return $KO
   return $OK
 }
 apply_I13() {
@@ -901,8 +966,11 @@ apply_I13() {
   for u in $(awk -F: '($3==0 && $1!="root"){print $1}' /etc/passwd); do
     warn "Compte $u avec UID 0 : à traiter manuellement."
   done
-  for u in $(awk -F: '($3<1000 && $1!="root" && $7!~/(nologin|false|sync|shutdown|halt)$/){print $1}' /etc/passwd); do
-    confirm "Retirer le shell du compte système $u ?" n && run usermod -s /usr/sbin/nologin "$u"
+  for u in $(sys_with_shell); do
+    confirm "Retirer le shell du compte de service $u (sudo -u $u reste possible) ?" o && run usermod -s /usr/sbin/nologin "$u"
+  done
+  for u in $(sys_with_pw); do
+    confirm "Verrouiller le mot de passe du compte de service $u ?" o && run passwd -l "$u"
   done
   return 0
 }
@@ -1002,6 +1070,381 @@ AllowGroups $SSH_GROUP"
   else
     err "Configuration SSH invalide : restauration."; restore_file "$SSH_ALLOW_FILE"; return 1
   fi
+}
+
+# =============================================================================
+#  NIVEAU INTERMÉDIAIRE — compléments v1.7 (couverture complète R1–R80)
+# =============================================================================
+
+# --- I17 : options mémoire du noyau au démarrage (R8) — SENSIBLE --------------------
+KMEM_FILE=/etc/default/grub.d/98-anssi-intermediaire.cfg
+KMEM_OPTS=(l1tf=full,force page_poison=on pti=on slab_nomerge=yes slub_debug=FZP
+           spec_store_bypass_disable=seccomp spectre_v2=on mds=full,nosmt mce=0
+           page_alloc.shuffle=1 rng_core.default_quality=500)
+register I17 I "Noyau" "Options mémoire du noyau au démarrage (pti, slab_nomerge, spectre_v2, mds… — R8)" 1
+check_I17() {
+  local o miss=() cmd=" $(cat /proc/cmdline) "
+  for o in "${KMEM_OPTS[@]}"; do [[ $cmd == *" $o "* ]] || miss+=("$o"); done
+  if ((${#miss[@]} == 0)); then
+    [[ -f $KMEM_FILE ]] && { DETAIL="toutes actives"; return $OK; }
+    DETAIL="actives mais absentes de /etc/default/grub.d (perdues à la régénération)"; return $KO
+  fi
+  [[ -f $KMEM_FILE ]] && { DETAIL="configurées, actives au prochain redémarrage"; return $WARN; }
+  DETAIL="absentes : $(summarize "${miss[@]}")"; return $KO
+}
+apply_I17() {
+  warn "mds=full,nosmt désactive l'hyperthreading : jusqu'à -30 % sur les charges parallèles (base de données, conteneurs)."
+  warn "slub_debug=FZP et page_poison=on coûtent en mémoire/CPU ; mce=0 arrête le poste sur erreur mémoire non corrigible."
+  info "À valider sur le poste réel avec les applications (mesurer avant/après)."
+  confirm "Ajouter ces options à la ligne de commande du noyau ?" o || return 0
+  write_file "$KMEM_FILE" 644 "# Options mémoire ANSSI-BP-028 R8 (niveau intermédiaire) - anssi-harden.sh
+GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX ${KMEM_OPTS[*]}\""
+  run update-grub
+  REBOOT_NEEDED=1
+}
+
+# --- I18 : IPv6 désactivé ou durci (R13) ------------------------------------------------
+IPV6_FILE=/etc/sysctl.d/99-zz-anssi-ipv6.conf
+declare -A SYSCTL_IPV6=()
+for _s in all default; do
+  for _k in router_solicitations accept_ra_rtr_pref accept_ra_pinfo accept_ra_defrtr autoconf; do
+    SYSCTL_IPV6[net.ipv6.conf.$_s.$_k]=0
+  done
+  SYSCTL_IPV6[net.ipv6.conf.$_s.max_addresses]=1
+done
+unset _s _k
+ipv6_off() {
+  [[ ! -d /proc/sys/net/ipv6 ]] && return 0
+  [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) == 1 && $(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null) == 1 ]]
+}
+register I18 I "Réseau" "IPv6 désactivé s'il est inutile, sinon annonces de routeurs ignorées (R13)"
+check_I18() {
+  if ipv6_off; then
+    [[ ! -d /proc/sys/net/ipv6 ]] && { DETAIL="IPv6 désactivé (noyau)"; return $OK; }
+    grep -qs 'disable_ipv6 = 1' "$IPV6_FILE" && { DETAIL="IPv6 désactivé"; return $OK; }
+    DETAIL="IPv6 désactivé mais non persistant"; return $KO
+  fi
+  sysctl_check SYSCTL_IPV6 || return $KO
+  [[ -f $IPV6_FILE ]] || { DETAIL="valeurs OK mais non persistantes"; return $KO; }
+  DETAIL="IPv6 actif et durci"; return $OK
+}
+apply_I18() {
+  ip -6 addr show scope global 2>/dev/null | grep -q inet6 && warn "Une adresse IPv6 globale est configurée : IPv6 semble utilisé."
+  if confirm "IPv6 est-il inutile sur ce poste (le désactiver complètement) ?" n; then
+    write_file "$IPV6_FILE" 644 '# IPv6 non utilisé (ANSSI-BP-028 R13) - anssi-harden.sh
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1'
+    run sysctl -q -p "$IPV6_FILE"
+    if grep -qs '^IPV6=yes' /etc/default/ufw; then
+      set_kv /etc/default/ufw IPV6 no "="
+      command -v ufw >/dev/null && run ufw reload
+    fi
+  else
+    info "IPv6 conservé : les annonces de routeurs et l'autoconfiguration sont désactivées."
+    sysctl_apply SYSCTL_IPV6 "$IPV6_FILE"
+  fi
+}
+
+# --- I19 : sessions inactives (R32) -----------------------------------------------
+TMOUT_FILE=/etc/profile.d/anssi-tmout.sh
+LOGIND_DROPIN=/etc/systemd/logind.conf.d/50-anssi.conf
+SESSION_TIMEOUT=600
+logind_idle_supported() { local v; v=$(systemctl --version 2>/dev/null | awk 'NR==1{print $2}'); [[ ${v%%[!0-9]*} =~ ^[0-9]+$ ]] && ((${v%%[!0-9]*} >= 252)); }
+register I19 I "Comptes" "Sessions inactives fermées après 10 min (TMOUT en lecture seule, logind — R32)"
+check_I19() {
+  local bad=() v
+  v=$(grep -hsE '^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+)?TMOUT=[0-9]+' /etc/profile /etc/profile.d/*.sh /etc/bash.bashrc \
+      | sed -nE 's/.*TMOUT=([0-9]+).*/\1/p' | tail -1)
+  [[ -n $v ]] && ((v > 0 && v <= 900)) || bad+=("TMOUT")
+  grep -hqsE 'readonly[[:space:]]+TMOUT' /etc/profile /etc/profile.d/*.sh /etc/bash.bashrc || bad+=("TMOUT modifiable")
+  if logind_idle_supported; then
+    grep -hqsE '^[[:space:]]*StopIdleSessionSec=[0-9]' /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf || bad+=("logind StopIdleSessionSec")
+  fi
+  DETAIL="TMOUT=${v:-non défini} ; écarts : $(summarize "${bad[@]}")"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+apply_I19() {
+  # Une seule ligne « readonly TMOUT=… » : pas d'erreur si le fichier est relu (su -, shells imbriqués)
+  write_file "$TMOUT_FILE" 644 "# Fermeture des shells inactifs (ANSSI-BP-028 R32) - anssi-harden.sh
+readonly TMOUT=$SESSION_TIMEOUT 2>/dev/null
+export TMOUT"
+  if logind_idle_supported; then
+    write_file "$LOGIND_DROPIN" 644 "[Login]
+# Ferme aussi les sessions SSH inactives (ANSSI-BP-028 R32) - anssi-harden.sh
+StopIdleSessionSec=$SESSION_TIMEOUT"
+    REBOOT_NEEDED=1
+    info "logind appliquera StopIdleSessionSec au prochain redémarrage."
+  fi
+}
+
+# --- I20 : verrouillage après échecs + historique des mots de passe (R31) — SENSIBLE ---
+PWHIST_PROFILE=/usr/share/pam-configs/anssi-pwhistory
+register I20 I "Authentification" "Verrouillage après 5 échecs (pam_faillock) et historique des mots de passe (R31)" 1
+check_I20() {
+  local d bad=()
+  d=$(awk -F= '/^[[:space:]]*deny[[:space:]]*=/{gsub(/ /,"",$2);v=$2} END{print v}' /etc/security/faillock.conf 2>/dev/null)
+  grep -qsE '^[^#]*pam_faillock\.so' /etc/pam.d/common-auth && [[ -n $d ]] || bad+=("pam_faillock")
+  grep -qsE '^[^#]*pam_pwhistory\.so.*remember=[1-9]' /etc/pam.d/common-password || bad+=("pam_pwhistory")
+  DETAIL="deny=${d:-?} ; manquant : $(summarize "${bad[@]}")"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+apply_I20() {
+  warn "Une erreur dans PAM peut bloquer toute authentification : gardez une session root ouverte."
+  confirm "Activer le verrouillage (5 échecs, 15 min) et l'historique (5 derniers mots de passe) ?" o || return 0
+  set_kv /etc/security/faillock.conf deny 5
+  set_kv /etc/security/faillock.conf unlock_time 900
+  set_kv /etc/security/faillock.conf fail_interval 900
+  # Noms de profils identiques à la v1.6 (R02) : pas de doublon sur un poste déjà durci
+  write_file /usr/share/pam-configs/faillock 644 'Name: Enable pam_faillock to deny access
+Default: yes
+Priority: 0
+Auth-Type: Primary
+Auth:
+	[default=die] pam_faillock.so authfail'
+  write_file /usr/share/pam-configs/faillock_notify 644 'Name: Notify of failed login attempts and reset count upon success
+Default: yes
+Priority: 1024
+Auth-Type: Primary
+Auth:
+	requisite pam_faillock.so preauth
+Account-Type: Primary
+Account:
+	required pam_faillock.so'
+  # Après pam_pwquality (priorité 1024), avant pam_unix (256)
+  write_file "$PWHIST_PROFILE" 644 'Name: Password history (ANSSI-BP-028 R31) - anssi-harden.sh
+Default: yes
+Priority: 1000
+Password-Type: Primary
+Password:
+	requisite pam_pwhistory.so remember=5 use_authtok enforce_for_root
+Password-Initial:
+	requisite pam_pwhistory.so remember=5 enforce_for_root'
+  backup_file /etc/pam.d/common-auth; backup_file /etc/pam.d/common-account; backup_file /etc/pam.d/common-password
+  run pam-auth-update --enable faillock faillock_notify anssi-pwhistory
+  warn "TEST dans une AUTRE session : « sudo -k; sudo true », puis « passwd » (ancien mot de passe refusé)."
+  info "Déblocage d'un compte : faillock --user <nom> --reset"
+}
+
+# --- I21 : directives sudo (R39) et EXEC réservé aux administrateurs (R41) — SENSIBLE ---
+SUDO_STRICT_FILE=/etc/sudoers.d/51-anssi-directives
+SUDO_ADMIN_FILE=/etc/sudoers.d/99-zz-anssi-admins   # lu en dernier : sa règle l'emporte
+SUDO_DIRECTIVES=(noexec requiretty use_pty ignore_dot env_reset umask=0077)
+sudo_defaults() { cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -E '^[[:space:]]*Defaults[[:space:]]' | sed -E 's/^[[:space:]]*Defaults[[:space:]]+//; s/[[:space:]]*=[[:space:]]*/=/g' | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
+register I21 I "Comptes" "sudo : noexec, requiretty, umask 0077, ignore_dot ; EXEC réservé aux administrateurs (R39, R41)" 1
+check_I21() {
+  local d o bad=()
+  d=$(sudo_defaults)
+  for o in "${SUDO_DIRECTIVES[@]}"; do grep -qx -- "$o" <<<"$d" || bad+=("$o"); done
+  DETAIL="directives manquantes : $(summarize "${bad[@]}")"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+apply_I21() {
+  local grp=sudo tmpd o content
+  warn "« Defaults noexec » empêche les commandes lancées par sudo de démarrer d'autres programmes."
+  warn "Les membres du groupe $grp reçoivent le tag EXEC: (administration complète conservée)."
+  warn "Toute autre règle sudo (ex. 90-cloud-init-users) perdra la possibilité de lancer des sous-processus."
+  confirm "Appliquer les directives sudo ?" o || return 0
+  content="# Directives sudo (ANSSI-BP-028 R39) - anssi-harden.sh"
+  for o in "${SUDO_DIRECTIVES[@]}"; do content+=$'\n'"Defaults $o"; done
+  content+=$'\n'"# root (scripts, cron, unités systemd utilisant sudo -u) n'a pas de terminal"
+  content+=$'\n'"Defaults:root !requiretty"
+  content+=$'\n'"# Gestion des paquets avec l'umask standard (fichiers de configuration lisibles par les services)"
+  content+=$'\n'"Defaults!/usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg umask=0022, umask_override"
+  tmpd=$(mktemp -d)
+  printf '%s\n' "$content" >"$tmpd/a"
+  printf '%s\n' "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)" "%$grp ALL=(ALL:ALL) EXEC: ALL" >"$tmpd/b"
+  if ! visudo -cqf "$tmpd/a" || ! visudo -cqf "$tmpd/b"; then err "Syntaxe sudoers invalide, abandon."; rm -rf "$tmpd"; return 1; fi
+  rm -rf "$tmpd"
+  write_file "$SUDO_STRICT_FILE" 440 "$content"
+  write_file "$SUDO_ADMIN_FILE" 440 "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)
+%$grp ALL=(ALL:ALL) EXEC: ALL"
+  ((DRY_RUN)) && return 0
+  if ! visudo -cq; then
+    err "Configuration sudo globale invalide : restauration."
+    restore_file "$SUDO_STRICT_FILE"; restore_file "$SUDO_ADMIN_FILE"; return 1
+  fi
+  warn "TEST dans une AUTRE session : « sudo -k; sudo -i » puis « sudo apt update »."
+}
+
+# --- I22 : répertoires personnels et fichiers d'initialisation (R50) -------------------------
+home_entries() { awk -F: '$3>=1000 && $3<65534 {print $1":"$6}' /etc/passwd; }
+INIT_FILES=(.bashrc .profile .bash_logout .bash_profile)
+register I22 I "Fichiers" "Répertoires personnels en 750, fichiers d'initialisation protégés (R50)"
+check_I22() {
+  local e u h m f bad=()
+  while IFS=: read -r u h; do
+    [[ -d $h ]] || continue
+    m=$(stat -c '%a' "$h"); (( (8#$m & 8#027) == 0 )) || bad+=("$h($m)")
+    [[ $(stat -c '%U' "$h") == "$u" ]] || bad+=("$h(propriétaire)")
+    for f in "${INIT_FILES[@]}"; do
+      [[ -f $h/$f ]] || continue
+      m=$(stat -c '%a' "$h/$f"); (( (8#$m & 8#037) == 0 )) || bad+=("$h/$f($m)")
+    done
+  done < <(home_entries)
+  grep -qE '^[[:space:]]*HOME_MODE[[:space:]]+0?750' /etc/login.defs || bad+=("login.defs:HOME_MODE")
+  DETAIL="écarts : $(summarize "${bad[@]}")"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+apply_I22() {
+  local u h m f
+  while IFS=: read -r u h; do
+    [[ -d $h ]] || continue
+    m=$(stat -c '%a' "$h"); (( (8#$m & 8#027) == 0 )) || run chmod 750 "$h"
+    [[ $(stat -c '%U' "$h") == "$u" ]] || warn "$h n'appartient pas à $u : à corriger manuellement."
+    for f in "${INIT_FILES[@]}"; do [[ -f $h/$f ]] && run chmod g-wx,o-rwx "$h/$f"; done
+  done < <(home_entries)
+  set_kv /etc/login.defs HOME_MODE 0750 " "
+}
+
+# --- I23 : démarrage sécurisé UEFI (R3, contrôle seul) --------------------------------
+register I23 I "Démarrage" "Démarrage UEFI avec Secure Boot actif (R3)"
+check_I23() {
+  [[ -d /sys/firmware/efi ]] || { DETAIL="démarrage BIOS hérité : passer en UEFI (réinstallation) ou documenter l'écart"; return $KO; }
+  local f b; f=$(compgen -G '/sys/firmware/efi/efivars/SecureBoot-8be4df61-*' | head -1)
+  if [[ -n $f ]]; then b=$(od -An -t u1 -j4 -N1 "$f" 2>/dev/null | tr -d ' ')
+  else b=$(mokutil --sb-state 2>/dev/null | grep -q enabled && echo 1); fi
+  [[ $b == 1 ]] && { DETAIL="Secure Boot actif"; return $OK; }
+  DETAIL="Secure Boot inactif : l'activer dans l'UEFI (noyau et GRUB Ubuntu signés)"; return $KO
+}
+
+# --- I24 : options de montage des partitions et /proc (R28) — SENSIBLE --------------
+declare -A MNT_WANT=([/boot]=nosuid,nodev,noexec [/home]=nosuid,nodev,noexec [/var]=nosuid,nodev,noexec
+                     [/var/log]=nosuid,nodev,noexec [/var/tmp]=nosuid,nodev,noexec
+                     [/var/log/audit]=nosuid,nodev,noexec [/opt]=nosuid,nodev [/srv]=nosuid,nodev)
+HIDEPID_GROUP=proc
+APT_REMOUNT_HELPER=/usr/local/sbin/anssi-apt-remount
+APT_REMOUNT_CONF=/etc/apt/apt.conf.d/50-anssi-remount
+# Docker sans volume dédié : ses conteneurs s'exécutent depuis /var/lib/docker -> pas de noexec sur /var
+var_needs_exec() { command -v docker >/dev/null 2>&1 && ! findmnt -n /var/lib/docker >/dev/null 2>&1; }
+fstab_mounts() { awk '$1 !~ /^#/ && NF >= 4 && $3 ~ /^(ext[234]|xfs|btrfs|f2fs|vfat)$/ && $2 != "/" {print $2}' /etc/fstab; }
+fstab_opts()   { awk -v m="$1" '$1 !~ /^#/ && $2 == m {print $4; exit}' /etc/fstab; }
+mnt_wanted() {
+  local w=${MNT_WANT[$1]:-nodev}
+  [[ $1 == /var ]] && var_needs_exec && w=nosuid,nodev
+  echo "$w"
+}
+register I24 I "Partitionnement" "Options nosuid/nodev/noexec des partitions, nodev partout, /proc en hidepid=2 (R28)" 1
+check_I24() {
+  local mp o fo bad=() po
+  for mp in $(fstab_mounts); do
+    fo=$(fstab_opts "$mp")
+    for o in $(mnt_wanted "$mp" | tr ',' ' '); do
+      if ! mount_has "$mp" "$o"; then bad+=("$mp:$o")
+      elif [[ ,$fo, != *",$o,"* ]]; then bad+=("$mp:$o(fstab)"); fi
+    done
+  done
+  po=$(findmnt -no OPTIONS /proc 2>/dev/null)
+  [[ ,$po, == *,hidepid=2,* || ,$po, == *,hidepid=invisible,* ]] || bad+=("/proc:hidepid")
+  DETAIL="écarts : $(summarize "${bad[@]}")"
+  var_needs_exec && DETAIL+=" (/var sans noexec : Docker sans volume /var/lib/docker dédié)"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+fstab_add_opts() { # point options_à_ajouter
+  if ((DRY_RUN)); then echo "    ${C_DIM}[simulation] /etc/fstab : $1 += $2${C_RST}"; return 0; fi
+  backup_file /etc/fstab
+  local tmp; tmp=$(mktemp)
+  awk -v m="$1" -v add="$2" 'BEGIN{OFS="\t"} $1 !~ /^#/ && $2 == m {$4 = $4 "," add} {print}' /etc/fstab >"$tmp" \
+    && cat "$tmp" >/etc/fstab
+  rm -f "$tmp"
+  log "FSTAB $1 += $2"
+}
+apply_I24() {
+  local mp o fo add
+  for mp in $(fstab_mounts); do
+    fo=$(fstab_opts "$mp"); add=""
+    for o in $(mnt_wanted "$mp" | tr ',' ' '); do [[ ,$fo, == *",$o,"* ]] || add+="${add:+,}$o"; done
+    [[ -n $add ]] || continue
+    [[ $mp == /home && $add == *noexec* ]] && warn "/home en noexec : les utilisateurs ne pourront plus exécuter de scripts depuis leur répertoire."
+    [[ $mp == /var && $add == *noexec* ]] && info "/var en noexec : dpkg sera remonté en exec le temps des installations (hook APT)."
+    confirm "Ajouter $add sur $mp (fstab + remontage) ?" o || continue
+    fstab_add_opts "$mp" "$add"
+    run mount -o remount "$mp" || warn "Remontage de $mp impossible : actif au prochain redémarrage."
+  done
+  var_needs_exec && warn "Docker sans volume /var/lib/docker dédié : /var reste sans noexec (écart à documenter)."
+  # Hook APT : dpkg exécute ses scripts depuis /var/lib/dpkg et peut utiliser /tmp, /var/tmp
+  write_file "$APT_REMOUNT_HELPER" 755 '#!/bin/sh
+# Remonte temporairement en « exec » les partitions déclarées noexec pendant dpkg (ANSSI-BP-028 R28)
+# Usage : anssi-apt-remount exec|noexec  - généré par anssi-harden.sh
+for m in /var /tmp /var/tmp; do
+  awk -v m="$m" '"'"'$1 !~ /^#/ && $2 == m && $4 ~ /(^|,)noexec(,|$)/ {f=1} END {exit !f}'"'"' /etc/fstab || continue
+  mount -o remount,"$1" "$m" 2>/dev/null
+done
+exit 0'
+  write_file "$APT_REMOUNT_CONF" 644 "// Partitions noexec remontées en exec pendant dpkg (ANSSI-BP-028 R28) - anssi-harden.sh
+DPkg::Pre-Invoke {\"$APT_REMOUNT_HELPER exec || true\";};
+DPkg::Post-Invoke {\"$APT_REMOUNT_HELPER noexec || true\";};"
+  # /proc : processus des autres utilisateurs masqués
+  local po; po=$(findmnt -no OPTIONS /proc 2>/dev/null)
+  if [[ ,$po, != *,hidepid=* ]]; then
+    info "hidepid=2 : chaque utilisateur ne voit que ses propres processus (root et le groupe $HIDEPID_GROUP voient tout)."
+    if confirm "Monter /proc avec hidepid=2 ?" o; then
+      run groupadd -f "$HIDEPID_GROUP"
+      id polkitd >/dev/null 2>&1 && run usermod -aG "$HIDEPID_GROUP" polkitd
+      if grep -qE '^[^#]*[[:space:]]/proc[[:space:]]' /etc/fstab; then warn "/proc déjà présent dans /etc/fstab : ajouter hidepid=2,gid=$HIDEPID_GROUP manuellement."
+      else append_line /etc/fstab "proc	/proc	proc	defaults,hidepid=2,gid=$HIDEPID_GROUP	0	0"; fi
+      run mount -o remount,hidepid=2,gid="$HIDEPID_GROUP" /proc
+    fi
+  fi
+  ((DRY_RUN)) || findmnt --verify >/dev/null 2>&1 || warn "findmnt --verify signale une anomalie dans /etc/fstab : vérifier avant de redémarrer."
+  REBOOT_NEEDED=1
+}
+
+# --- I25 : /tmp et /var/tmp propres à chaque utilisateur (R55) — SENSIBLE -------------------
+NS_CONF=/etc/security/namespace.conf
+NS_PROFILE=/usr/share/pam-configs/anssi-namespace
+NS_TMPFILES=/etc/tmpfiles.d/anssi-namespace.conf
+register I25 I "Comptes" "Répertoires temporaires propres à chaque utilisateur (pam_namespace — R55)" 1
+check_I25() {
+  local bad=()
+  grep -qsE '^[^#]*pam_namespace\.so' /etc/pam.d/common-session || bad+=("pam_namespace")
+  grep -qsE '^[[:space:]]*/tmp[[:space:]]' "$NS_CONF" || bad+=("/tmp")
+  grep -qsE '^[[:space:]]*/var/tmp[[:space:]]' "$NS_CONF" || bad+=("/var/tmp")
+  DETAIL="manquant : $(summarize "${bad[@]}")"
+  ((${#bad[@]} == 0)) && return $OK || return $KO
+}
+apply_I25() {
+  info "Chaque session interactive (console, SSH) reçoit son propre /tmp et /var/tmp ; root et adm sont exclus."
+  info "Les services (Docker, base de données) ne sont pas concernés ; sudo et cron non plus."
+  confirm "Activer les répertoires temporaires par utilisateur ?" o || return 0
+  write_file "$NS_TMPFILES" 644 '# Racines des instances pam_namespace (ANSSI-BP-028 R55) - anssi-harden.sh
+d /tmp/.inst 0000 root root -
+d /var/tmp/.inst 0000 root root -'
+  run systemd-tmpfiles --create "$NS_TMPFILES"
+  if ! grep -qsE '^[[:space:]]*/tmp[[:space:]]' "$NS_CONF"; then
+    append_line "$NS_CONF" "/tmp	/tmp/.inst/	user	root,adm"
+  fi
+  if ! grep -qsE '^[[:space:]]*/var/tmp[[:space:]]' "$NS_CONF"; then
+    append_line "$NS_CONF" "/var/tmp	/var/tmp/.inst/	user	root,adm"
+  fi
+  # mount_private : / est en propagation « shared » sous systemd
+  write_file "$NS_PROFILE" 644 'Name: Per-user /tmp and /var/tmp (ANSSI-BP-028 R55) - anssi-harden.sh
+Default: yes
+Priority: 0
+Session-Interactive-Only: yes
+Session-Type: Additional
+Session:
+	required pam_namespace.so mount_private'
+  backup_file /etc/pam.d/common-session
+  run pam-auth-update --enable anssi-namespace
+  warn "TEST dans une AUTRE session SSH : « ls -ld /tmp ; touch /tmp/test » doit fonctionner."
+}
+
+# --- I26 : surveillance d'intégrité des fichiers (R79) -----------------------------------
+register I26 I "Journalisation" "Surveillance d'intégrité des fichiers (AIDE : base de référence + contrôle quotidien — R79)"
+aide_timer_on() { systemctl is-enabled -q dailyaidecheck.timer 2>/dev/null || [[ -x /etc/cron.daily/aide ]]; }
+check_I26() {
+  pkg_installed aide || { DETAIL="AIDE absent"; return $KO; }
+  [[ -s /var/lib/aide/aide.db || -s /var/lib/aide/aide.db.gz ]] || { DETAIL="AIDE installé, base de référence absente"; return $KO; }
+  aide_timer_on || { DETAIL="base présente, contrôle quotidien inactif"; return $KO; }
+  DETAIL="base du $(date -r "$(ls /var/lib/aide/aide.db* | head -1)" '+%F %T'), contrôle quotidien actif"; return $OK
+}
+apply_I26() {
+  info "À faire EN DERNIER : la base de référence doit refléter le poste durci. À régénérer après chaque mise à jour validée."
+  confirm "Installer AIDE et créer la base de référence (plusieurs minutes) ?" o || return 0
+  pkg_installed aide || apt_install aide aide-common || return 1
+  run aideinit -y -f
+  if systemctl list-unit-files dailyaidecheck.timer >/dev/null 2>&1; then run systemctl enable --now dailyaidecheck.timer; fi
+  info "Contrôle manuel : sudo aide --config /etc/aide/aide.conf --check"
 }
 
 # --- Niveau Renforcé : module optionnel ---------------------------------------------

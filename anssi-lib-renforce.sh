@@ -3,24 +3,26 @@
 #  anssi-lib-renforce.sh — Mesures du niveau RENFORCÉ (R), chargé par anssi-lib.sh
 # -----------------------------------------------------------------------------
 #  Deux familles :
-#    R01–R12 : mesures « simples » — contrôle + correction (certaines sensibles)
+#    R01–R11 : mesures « simples » — contrôle + correction (certaines sensibles)
+#              v1.7 : R02, R04, R07, R10 et R12 relèvent du niveau Intermédiaire
+#              du guide et sont devenues I20, I22, I19, I26 et I18.
 #    R20–R27 : points « à étudier » — contrôle seul : ils dépendent des
 #              applications installées, de l'infrastructure ou du matériel et
 #              ne peuvent pas être corrigés par un script générique.
 #  Activation : -l renforce (inclut Minimal + Intermédiaire)
-#  NB : sélection indicative à rapprocher des recommandations Rxx du guide
-#       ANSSI-BP-028 v2.0 avant toute livraison.
+#  NB : mesures au-delà du niveau Intermédiaire ; la vérification
+#       recommandation par recommandation se fait avec anssi-bp028-r80.sh.
 # =============================================================================
 
 # =============================================================================
-#  R01–R12 : MESURES SIMPLES
+#  R01–R11 : MESURES SIMPLES
 # =============================================================================
 
 # --- R01 : options de durcissement du noyau au démarrage -------------------------
 KCMD_FILE=/etc/default/grub.d/99-anssi-renforce.cfg
-KCMD_OPTS=(init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1
-           pti=on randomize_kstack_offset=on vsyscall=none debugfs=off)
-register R01 R "Noyau" "Options de durcissement du noyau au démarrage (init_on_free, pti, vsyscall=none…)"
+# NB : pti, slab_nomerge, page_alloc.shuffle… sont posés au niveau Intermédiaire (I17, R8 du guide)
+KCMD_OPTS=(init_on_alloc=1 init_on_free=1 randomize_kstack_offset=on vsyscall=none debugfs=off)
+register R01 R "Noyau" "Options de durcissement du noyau au démarrage (init_on_free, vsyscall=none, debugfs=off…)"
 check_R01() {
   local o miss=()
   for o in "${KCMD_OPTS[@]}"; do [[ " $(cat /proc/cmdline) " == *" $o "* ]] || miss+=("$o"); done
@@ -37,41 +39,6 @@ GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX ${KCMD_OPTS[*]}\""
   REBOOT_NEEDED=1
 }
 
-# --- R02 : verrouillage après échecs d'authentification — SENSIBLE --------------------
-register R02 R "Authentification" "Verrouillage temporaire après 5 échecs d'authentification (pam_faillock)" 1
-check_R02() {
-  local d; d=$(awk -F= '/^[[:space:]]*deny[[:space:]]*=/{gsub(/ /,"",$2);v=$2} END{print v}' /etc/security/faillock.conf 2>/dev/null)
-  if grep -q pam_faillock /etc/pam.d/common-auth 2>/dev/null && [[ -n $d ]]; then
-    DETAIL="actif : deny=$d"; return $OK
-  fi
-  DETAIL="pam_faillock non configuré"; return $KO
-}
-apply_R02() {
-  warn "Une erreur dans PAM peut bloquer toute authentification : gardez une session root ouverte."
-  confirm "Activer le verrouillage (5 échecs, 15 min) ?" n || return 0
-  set_kv /etc/security/faillock.conf deny 5
-  set_kv /etc/security/faillock.conf unlock_time 900
-  set_kv /etc/security/faillock.conf fail_interval 900
-  write_file /usr/share/pam-configs/faillock 644 'Name: Enable pam_faillock to deny access
-Default: yes
-Priority: 0
-Auth-Type: Primary
-Auth:
-	[default=die] pam_faillock.so authfail'
-  write_file /usr/share/pam-configs/faillock_notify 644 'Name: Notify of failed login attempts and reset count upon success
-Default: yes
-Priority: 1024
-Auth-Type: Primary
-Auth:
-	requisite pam_faillock.so preauth
-Account-Type: Primary
-Account:
-	required pam_faillock.so'
-  backup_file /etc/pam.d/common-auth; backup_file /etc/pam.d/common-account
-  run pam-auth-update --enable faillock faillock_notify
-  warn "TEST : dans une AUTRE session, « sudo -k; sudo true » doit fonctionner. Déblocage : faillock --user <nom> --reset"
-}
-
 # --- R03 : umask 077 pour les utilisateurs ------------------------------------------
 register R03 R "Fichiers" "umask 077 : fichiers des utilisateurs illisibles par les autres"
 check_R03() {
@@ -85,28 +52,6 @@ apply_R03() {
   confirm "Passer l'umask à 077 ?" o || return 0
   set_kv /etc/login.defs UMASK 077 " "
   write_file /etc/profile.d/anssi-umask.sh 644 'umask 077'
-}
-
-# --- R04 : répertoires personnels en 750 maximum -------------------------------------
-register R04 R "Fichiers" "Répertoires personnels non accessibles aux autres utilisateurs (750 max)"
-home_dirs() { awk -F: '$3>=1000 && $3<65534 {print $6}' /etc/passwd | sort -u; }
-check_R04() {
-  local h bad=() m
-  for h in $(home_dirs); do
-    [[ -d $h ]] || continue
-    m=$(stat -c '%a' "$h"); (( (8#$m & 8#027) == 0 )) || bad+=("$h($m)")
-  done
-  grep -qE '^[[:space:]]*HOME_MODE[[:space:]]+0?750' /etc/login.defs || bad+=("login.defs:HOME_MODE")
-  DETAIL="écarts : $(summarize "${bad[@]}")"
-  ((${#bad[@]}==0)) && return $OK || return $KO
-}
-apply_R04() {
-  local h m
-  for h in $(home_dirs); do
-    [[ -d $h ]] || continue
-    m=$(stat -c '%a' "$h"); (( (8#$m & 8#027) == 0 )) || run chmod 750 "$h"
-  done
-  set_kv /etc/login.defs HOME_MODE 0750 " "
 }
 
 # --- R05 : absence de compilateurs ---------------------------------------------------
@@ -156,17 +101,6 @@ apply_R06() {
   else err "Configuration SSH invalide : restauration."; restore_file "$SSH_CRYPTO_FILE"; return 1; fi
 }
 
-# --- R07 : déconnexion des sessions shell inactives ------------------------------------
-register R07 R "Comptes" "Déconnexion automatique des shells inactifs (TMOUT=900 s)"
-check_R07() {
-  grep -qs 'TMOUT=900' /etc/profile.d/anssi-tmout.sh && { DETAIL="TMOUT=900"; return $OK; }
-  DETAIL="aucun délai d'inactivité"; return $KO
-}
-apply_R07() {
-  write_file /etc/profile.d/anssi-tmout.sh 644 '# Déconnexion après 15 min d'"'"'inactivité (anssi-harden.sh)
-if [ "${TMOUT:-0}" != 900 ]; then TMOUT=900; readonly TMOUT; export TMOUT; fi'
-}
-
 # --- R08 : Ctrl-Alt-Suppr désactivé ----------------------------------------------------
 register R08 R "Démarrage" "Redémarrage par Ctrl-Alt-Suppr désactivé"
 check_R08() {
@@ -192,21 +126,6 @@ apply_R09() {
   write_file "$AUDIT_IMMUTABLE" 640 '## Verrouillage des règles (doit rester le DERNIER fichier) - anssi-harden.sh
 -e 2'
   run augenrules --load
-}
-
-# --- R10 : contrôle d'intégrité des fichiers (AIDE) -----------------------------------
-register R10 R "Journalisation" "Contrôle d'intégrité des fichiers système (AIDE, base de référence)"
-check_R10() {
-  pkg_installed aide || { DETAIL="AIDE absent"; return $KO; }
-  [[ -s /var/lib/aide/aide.db ]] || { DETAIL="AIDE installé, base de référence absente"; return $KO; }
-  DETAIL="base : $(date -r /var/lib/aide/aide.db '+%F %T')"; return $OK
-}
-apply_R10() {
-  info "L'initialisation de la base prend plusieurs minutes. À refaire après chaque mise à jour validée."
-  confirm "Installer AIDE et créer la base de référence ?" o || return 0
-  pkg_installed aide || apt_install aide aide-common || return 1
-  run aideinit -y -f
-  info "Contrôle manuel : sudo aide --config /etc/aide/aide.conf --check"
 }
 
 # --- R11 : blocage du chargement de modules après démarrage — SENSIBLE ----------------
@@ -236,27 +155,6 @@ WantedBy=multi-user.target'
   run systemctl enable anssi-modules-disabled.service
   REBOOT_NEEDED=1
   info "Pour désactiver : systemctl disable anssi-modules-disabled.service, puis redémarrer."
-}
-
-# --- R12 : IPv6 désactivé s'il n'est pas utilisé — SENSIBLE ---------------------------
-IPV6_FILE=/etc/sysctl.d/99-zz-anssi-ipv6.conf
-register R12 R "Réseau" "IPv6 désactivé s'il n'est pas utilisé" 1
-check_R12() {
-  if [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) == 1 && -f $IPV6_FILE ]]; then
-    DETAIL="désactivé"; return $OK
-  fi
-  if ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
-    DETAIL="adresse IPv6 globale présente : vérifier avant de désactiver"; return $WARN
-  fi
-  DETAIL="activé mais non utilisé"; return $KO
-}
-apply_R12() {
-  ip -6 addr show scope global 2>/dev/null | grep -q inet6 && warn "Une adresse IPv6 globale est configurée sur ce poste."
-  confirm "Désactiver IPv6 ?" n || return 0
-  write_file "$IPV6_FILE" 644 '# IPv6 non utilisé (anssi-harden.sh)
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1'
-  run sysctl -q -p "$IPV6_FILE"
 }
 
 # =============================================================================

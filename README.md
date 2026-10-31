@@ -5,11 +5,12 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.5.1-blue)
+![Version](https://img.shields.io/badge/version-v1.7-blue)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
-![Mesures](https://img.shields.io/badge/mesures-42%20%2B%208%20%C3%A0%20%C3%A9tudier-success)
+![Mesures](https://img.shields.io/badge/mesures-41%20%2B%207%20renforc%C3%A9%20%2B%208%20%C3%A0%20%C3%A9tudier-success)
+![R1–R80](https://img.shields.io/badge/R1%E2%80%93R80-Interm%C3%A9diaire%20complet-002395)
 
 </div>
 
@@ -26,6 +27,7 @@
 - [🔍 Étape 3 — Audit initial](#-étape-3--audit-initial)
 - [🔒 Étape 4 — Durcissement](#-étape-4--durcissement)
 - [✅ Étape 5 — Vérification après redémarrage](#-étape-5--vérification-après-redémarrage)
+- [🧪 Vérification supplémentaire R1–R80](#-vérification-supplémentaire-r1r80)
 - [📋 Liste des mesures](#-liste-des-mesures)
 - [🐳 Docker et durcissement](#-docker-et-durcissement)
 - [⚠️ Pièges connus sur Ubuntu](#️-pièges-connus-sur-ubuntu)
@@ -40,12 +42,13 @@
 
 | | |
 | --- | --- |
-| 🎯 **Objectif** | Amener un poste Ubuntu au niveau **Minimal** ou **Intermédiaire** du guide ANSSI-BP-028 et le prouver par un audit |
+| 🎯 **Objectif** | Amener un poste Ubuntu au niveau **Minimal** ou **Intermédiaire** du guide ANSSI-BP-028 et le prouver, **recommandation par recommandation (R1–R80)** |
 | 🔍 **Audit** | Contrôle en lecture seule, tableau coloré, export CSV pour la documentation |
 | 🔒 **Durcissement** | Interactif, automatique ou mesure par mesure, avec simulation (`-n`) |
 | 💾 **Sécurité** | Sauvegarde de chaque fichier modifié, journal de toutes les actions, validation `sshd -t` / `visudo` |
 | 🔁 **Persistance** | Les contrôles vérifient la configuration chargée au prochain démarrage, pas seulement l'état en mémoire |
-| 📊 **Résultat de référence** | 44 % après installation → **100 %** après durcissement et redémarrage (VM Ubuntu 24.04) |
+| 📊 **Résultat de référence** | 44 % après installation → **100 %** après durcissement et redémarrage (VM Ubuntu 24.04, mesures v1.5) |
+| 📑 **Preuve** | Rapport R1–R80 : chaque recommandation du niveau est conforme, justifiée par écrit, attestée ou sans objet |
 
 ---
 
@@ -53,10 +56,12 @@
 
 | Fichier | Rôle |
 | --- | --- |
-| 🟥 `anssi-lib-renforce.sh` | Niveau Renforcé : mesures simples (R01–R12) et points à étudier (R20–R27) |
-| 📚 `anssi-lib.sh` | Définition des 28 mesures : une fonction `check_<ID>` (contrôle) et une fonction `apply_<ID>` (correction) par mesure |
+| 🟥 `anssi-lib-renforce.sh` | Niveau Renforcé : mesures simples (R01–R11) et points à étudier (R20–R27) |
+| 📚 `anssi-lib.sh` | Mesures Minimal (M01–M15) et Intermédiaire (I01–I26) : une fonction `check_<ID>` (contrôle) et une fonction `apply_<ID>` (correction) par mesure |
 | 🔍 `anssi-audit.sh` | Audit en lecture seule, tableau de conformité, export CSV |
 | 🔒 `anssi-harden.sh` | Durcissement : menu interactif, mode automatique, sélection d'IDs, simulation |
+| 🧪 `anssi-bp028-r80.sh` | Vérification indépendante des **80 recommandations R1–R80** du guide (lecture seule), d'après le référentiel ComplianceAsCode adapté à Ubuntu ; gère les écarts justifiés (`-j`) |
+| 📝 `ecarts-justifies.exemple.conf` | Modèle d'écarts justifiés et d'attestations, à adapter à chaque poste |
 | 📄 `.gitattributes` | Force les fins de ligne Unix (LF) : un script en CRLF ne s'exécute pas sous Linux |
 
 > 💡 L'audit et le durcissement appellent **les mêmes fonctions de contrôle** : ils ne peuvent pas être en désaccord sur ce qui est « conforme ».
@@ -306,6 +311,17 @@ sudo bash anssi-harden.sh -l intermediaire -a     # 🤖 automatique (hors mesur
 sudo bash anssi-harden.sh -m I12                  # 🎯 une ou plusieurs mesures : -m M05,I12
 ```
 
+**Niveau Intermédiaire complet (procédure de livraison)** :
+
+```bash
+sudo bash anssi-harden.sh -l intermediaire -a                      # 1. tout ce qui est sans risque
+sudo bash anssi-harden.sh -m I12,I16,I17,I20,I21,I24,I25           # 2. mesures sensibles, une par une, avec test
+sudo reboot                                                        # 3. redémarrage
+sudo bash anssi-harden.sh -m I26                                   # 4. AIDE EN DERNIER (base du poste final)
+sudo bash anssi-audit.sh -o audit-$(hostname).csv                  # 5. nos mesures : 100 % attendu
+sudo bash anssi-bp028-r80.sh -j ecarts-$(hostname).conf -o r80-$(hostname).csv   # 6. preuve R1–R80
+```
+
 | Option | Rôle |
 | --- | --- |
 | `-l niveau` | `minimal` ou `intermediaire` (sinon menu) |
@@ -321,6 +337,12 @@ Elles ne sont **jamais** appliquées en mode automatique, et posent toujours leu
 | --- | --- | --- |
 | 🔌 **I04** — blocage du stockage USB | Clés et disques USB inutilisables | Les adaptateurs série/JTAG (`ftdi_sio`, `cdc_acm`) ne sont pas touchés : à tester avec votre matériel |
 | 🥾 **I12** — mot de passe GRUB | Un mot de passe perdu bloque l'édition du démarrage | Le noter dans un coffre-fort ; le démarrage normal reste sans mot de passe |
+| 🔑 **I16** — SSH réservé au groupe `ssh-users` | Un compte hors du groupe ne peut plus se connecter | Tester une nouvelle connexion avant de fermer la session |
+| 🧠 **I17** — options mémoire du noyau (R8) | `mds=full,nosmt` coupe l'hyperthreading ; `slub_debug`, `page_poison` coûtent en performance | Mesurer les applications avant/après ; refus = écart justifié |
+| 🔐 **I20** — `pam_faillock` + historique | Une erreur PAM bloque toute authentification | Garder une session root ouverte ; déblocage `faillock --user <nom> --reset` |
+| 🧑‍💼 **I21** — `Defaults noexec`, `requiretty`… | Les règles sudo sans tag `EXEC:` ne peuvent plus lancer de sous-processus | Les administrateurs (`%sudo`) reçoivent `EXEC:` ; tester `sudo -i` et `sudo apt update` |
+| 💽 **I24** — `noexec` sur `/var`, `/home`… et `hidepid=2` | Scripts non exécutables depuis ces partitions | Un hook APT remonte `/var`, `/tmp`, `/var/tmp` en exec pendant dpkg ; `/var` reste sans noexec si Docker n'a pas de volume dédié |
+| 🗂️ **I25** — `/tmp` par utilisateur (`pam_namespace`) | Les sessions interactives ne partagent plus `/tmp` | Services, sudo et cron ne sont pas concernés ; tester une connexion SSH |
 
 ### Réponses à surveiller en mode interactif
 
@@ -349,37 +371,107 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 - [ ] 🧑‍💼 `sudo -n true && echo OK`, et les commandes sont tracées dans `/var/log/sudo.log`
 - [ ] 🔐 `passwd` demande le mot de passe actuel (annuler avec Ctrl+C)
 - [ ] 🥾 Démarrage normal sans mot de passe ; touche `e` dans GRUB → identifiant demandé
+- [ ] 🧑‍💼 `sudo -i` puis `sudo apt update` fonctionnent (administrateurs avec `EXEC:`, I21)
+- [ ] ⏱️ `echo $TMOUT` affiche 600 et `TMOUT=0` est refusé (lecture seule, I19)
+- [ ] 🗂️ `touch /tmp/test && ls /tmp` : seul votre fichier apparaît (`/tmp` par utilisateur, I25)
+- [ ] 👀 `ps aux` ne montre que vos processus (`hidepid=2`, I24)
+- [ ] 📦 `sudo apt install --reinstall cowsay` puis `sudo apt purge cowsay` : dpkg fonctionne malgré `noexec` (hook APT, I24)
+- [ ] 🐳 `docker run --rm hello-world` et vos conteneurs démarrent ; la base de données répond
 - [ ] 🧩 Vos applications et votre matériel fonctionnent sur le poste durci
+
+---
+
+## 🧪 Vérification supplémentaire R1–R80
+
+`anssi-audit.sh` contrôle **nos 42 mesures**. `anssi-bp028-r80.sh` prend le problème dans l'autre sens : il part des **80 recommandations numérotées du guide** (R1 à R80) et vérifie chacune sur le poste. Il sert de **contre-audit** : il montre ce que nos mesures ne couvrent pas encore et ce qu'il faut justifier comme écart.
+
+- 📚 **Référentiel** : fichier `controls/anssi.yml` du projet [ComplianceAsCode](https://github.com/ComplianceAsCode/content) (base d'OpenSCAP), qui associe à chaque recommandation son niveau et des contrôles techniques. Ce projet ne fournit pas de profil ANSSI pour Ubuntu : les contrôles ont été **réécrits pour Ubuntu** (AppArmor au lieu de SELinux, `dpkg` au lieu de `rpm`, `/etc/pam.d/common-*`, ufw…).
+- 🔒 **Lecture seule** : rien n'est modifié, aucune dépendance aux autres scripts.
+- ⏱️ **Durée** : 20 secondes à 3 minutes (R53–R57 parcourent les systèmes de fichiers locaux).
+
+```bash
+sudo bash anssi-bp028-r80.sh                          # niveau Intermédiaire (inclut Minimal)
+sudo bash anssi-bp028-r80.sh -l renforce -q           # Renforcé, seulement ce qui n'est pas conforme
+sudo bash anssi-bp028-r80.sh -r R12,R28 -v            # quelques recommandations, détail complet
+sudo bash anssi-bp028-r80.sh -o r80-$(hostname).csv   # export CSV pour la documentation
+```
+
+| Résultat | Signification |
+| --- | --- |
+| 🟢 `CONFORME` | Tous les points contrôlés sont conformes |
+| 🔴 `NON CONFORME` | Au moins un point non conforme (le détail `✘` dit lequel) |
+| 🟡 `À VÉRIFIER` | Points conformes, mais des compléments recommandés (`⚠`) manquent |
+| 🔵 `MANUEL` | Recommandation organisationnelle ou matérielle : le script affiche des **éléments de preuve** (comptes, services, empreintes SSH…) à examiner et à documenter |
+| ⚪ `N/A` | Sans objet sur ce poste (SELinux, annuaire, architecture ARM…) |
+
+> ⚠️ **Ne pas confondre les numéros.** `R1`–`R80` (sans zéro) sont les recommandations du **guide**. `R01`–`R27` (avec zéro) sont les mesures du **niveau Renforcé de nos scripts**. La colonne **Script** indique quelles mesures de nos scripts couvrent chaque recommandation du guide.
+
+### 📝 Écarts justifiés et attestations (`-j`)
+
+Un auditeur n'attend pas 100 % de conformité technique : il attend que **chaque recommandation soit appliquée, ou que son écart soit justifié par écrit**, et que les points organisationnels aient été vérifiés. Le fichier passé avec `-j` sert à cela :
+
+```text
+# Rxx | motif | justification
+R12 | net.ipv4.ip_forward | Docker exige le routage IPv4. Compensation : ufw, DOCKER-USER, ports publiés limités à 443.
+R30 | *                   | Comptes revus le 18/11/2026 avec le responsable IT : admin1 (exploitation), admin2 (secours).
+```
+
+- Le **motif** doit apparaître dans le point signalé (`✘` ou `⚠`) : une justification ne masque **que** ce point, pas toute la recommandation. `*` couvre la recommandation entière et sert à **attester** une recommandation `MANUEL`.
+- Un texte encore au format modèle (`<…>`, `JJ/MM/AAAA`, « à compléter ») est **refusé**.
+- Une justification qui ne correspond plus à rien est signalée « sans objet ».
+- Partir de [`ecarts-justifies.exemple.conf`](ecarts-justifies.exemple.conf) et ne garder que les lignes vraies pour le poste.
+
+| Nouveau résultat | Signification |
+| --- | --- |
+| 🔷 `ÉCART JUSTIFIÉ` | Tous les points non conformes sont couverts par une justification |
+| 🔷 `ATTESTÉ` | Recommandation organisationnelle vérifiée, avec date et interlocuteur |
+
+Objectif de livraison : la dernière ligne du rapport doit afficher **« ✔ Toutes les recommandations vérifiées sont conformes, justifiées, attestées ou sans objet »**. Le CSV (`-o`) contient le résultat et la justification de chaque recommandation, prêt à être repris dans la documentation.
+
+**Écarts habituels sur un poste Ubuntu avec Docker** (à justifier, pas à « corriger » à tout prix) :
+
+| Recommandation | Raison |
+| --- | --- |
+| R12 | `ip_forward=1` imposé par Docker |
+| R28 | Pas de `noexec` sur `/var` si Docker n'a pas de volume `/var/lib/docker` dédié |
+| R40 | Règle d'administration `%sudo ALL=(ALL:ALL) ALL` |
+| R59 | Dépôt Docker (officiel, signé, mais non Ubuntu) |
+| R61 | Poste hors ligne : pas de mises à jour automatiques |
+| R79, R80 | Services exposés sans profil AppArmor fourni (sshd, docker-proxy…), ports publiés par les conteneurs |
+| R15–R27 | Niveau Élevé seulement : options de compilation du noyau, impossibles avec le noyau Ubuntu |
 
 ---
 
 ## 📋 Liste des mesures
 
-### 🟦 Niveau Minimal (14)
+### 🟦 Niveau Minimal (15)
 
 | ID | Thème | Mesure | Correction |
 | --- | --- | --- | --- |
 | M01 | 🔄 Mises à jour | Système à jour | ✅ auto |
 | M02 | 🔄 Mises à jour | Mises à jour de sécurité automatiques | ✅ auto (défaut : non) |
-| M03 | ✂️ Surface | Absence de paquets obsolètes (telnet, rsh, nis, tftp, ftp…) | ✅ auto |
+| M03 | ✂️ Surface | Absence de paquets obsolètes (telnet, rsh, nis, tftp, ftp, serveur DHCP, sendmail…) — R62 | ✅ auto |
 | M04 | ✂️ Surface | Services inutiles désactivés (avahi, cups, bluetooth, rpcbind, samba…) | ✅ auto |
 | M05 | 🧱 Réseau | Pare-feu ufw, entrant refusé par défaut | ✅ auto |
 | M06 | 🔑 SSH | Root interdit, X11 et tunnels désactivés, journalisation | ✅ auto |
 | M07 | 👤 Comptes | Mot de passe root verrouillé | ✅ auto |
 | M08 | 🔐 Authentification | pam_pwquality : 12 caractères, 3 classes | ✅ auto |
 | M09 | 📁 Fichiers | Droits restreints sur shadow, sudoers, sshd_config, grub.cfg | ✅ auto |
-| M10 | 📁 Fichiers | Sticky bit sur les répertoires accessibles à tous | ✅ auto |
+| M10 | 📁 Fichiers | Sticky bit sur les répertoires accessibles à tous, aucun fichier inscriptible par tous — R54 | ✅ auto |
 | M11 | 📁 Fichiers | Aucun fichier sans propriétaire | 👁️ contrôle seul |
 | M12 | 🕐 Journalisation | Horloge synchronisée (NTP) | ✅ auto |
 | M13 | 🕐 Journalisation | Journal systemd persistant | ✅ auto |
 | M14 | 🕐 Journalisation | Bannière légale (`/etc/issue`, `/etc/issue.net`) | ✅ auto |
+| M15 | 🔄 Mises à jour | Dépôts APT officiels et signés, dépôts tiers à justifier — R59 | 👁️ contrôle seul |
 
-### 🟪 Niveau Intermédiaire (16)
+### 🟪 Niveau Intermédiaire (26)
+
+Depuis v1.7, ce niveau couvre **toutes les recommandations automatisables** des niveaux Minimal et Intermédiaire du guide. Les autres (BIOS, revue des comptes…) sont attestées dans le fichier d'écarts.
 
 | ID | Thème | Mesure | Correction |
 | --- | --- | --- | --- |
-| I01 | 🧠 Noyau / réseau | Paramètres réseau du noyau (redirections, rp_filter, log_martians…) | ✅ auto |
-| I02 | 🧠 Noyau | Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, protected_*) | ✅ auto |
+| I01 | 🧠 Noyau / réseau | Paramètres réseau IPv4 (redirections, ARP, rp_filter, log_martians, ports locaux…) — R12 | ✅ auto |
+| I02 | 🧠 Noyau | Paramètres de sécurité du noyau (kptr, dmesg, ptrace, BPF, perf, pid_max, protected_*) — R9, R11, R14 | ✅ auto |
 | I03 | 🧠 Noyau | Modules inutiles interdits (cramfs, hfs, dccp, sctp, firewire…) | ✅ auto |
 | I04 | 🔌 Périphériques | Stockage USB bloqué | 🚦 sensible |
 | I05 | 💽 Partitionnement | `/tmp` et `/dev/shm` en nodev,nosuid,noexec | ✅ auto |
@@ -390,31 +482,36 @@ Tests fonctionnels à faire **en tant qu'utilisateur normal, pas en root** :
 | I10 | 📁 Fichiers | umask 027 | ✅ auto |
 | I11 | 🧠 Noyau | Core dumps désactivés | ✅ auto |
 | I12 | 🥾 Démarrage | Mot de passe GRUB | 🚦 sensible |
-| I13 | 👤 Comptes | Pas de mot de passe vide, pas d'UID 0 hors root | ✅ auto |
+| I13 | 👤 Comptes | Pas de mot de passe vide ni d'UID 0 hors root ; comptes de service sans shell ni mot de passe — R34 | ✅ auto |
 | I14 | 📁 Fichiers | Inventaire setuid/setgid | 👁️ à justifier |
 | I15 | 📁 Fichiers | Bits SUID/SGID superflus retirés (`dpkg-statoverride`) | ✅ auto |
 | I16 | 🔑 SSH | Connexion SSH réservée au groupe `ssh-users` (`AllowGroups`) | 🚦 sensible |
+| I17 | 🧠 Noyau | Options mémoire au démarrage (`pti`, `slab_nomerge`, `spectre_v2`, `mds`…) — R8 | 🚦 sensible · 🔄 redémarrage |
+| I18 | 🧱 Réseau | IPv6 désactivé s'il est inutile, sinon annonces de routeurs ignorées — R13 | ✅ auto |
+| I19 | 👤 Comptes | Sessions inactives fermées après 10 min (`TMOUT`, logind) — R32 | ✅ auto |
+| I20 | 🔐 Authentification | Verrouillage après 5 échecs (`pam_faillock`), historique des mots de passe — R31 | 🚦 sensible |
+| I21 | 👤 Comptes | sudo : `noexec`, `requiretty`, `umask=0077`, `ignore_dot` ; `EXEC:` pour les administrateurs — R39, R41 | 🚦 sensible |
+| I22 | 📁 Fichiers | Répertoires personnels en 750, fichiers d'initialisation protégés — R50 | ✅ auto |
+| I23 | 🥾 Démarrage | UEFI + Secure Boot actif — R3 | 👁️ contrôle seul (UEFI) |
+| I24 | 💽 Partitionnement | nosuid/nodev/noexec par partition, nodev partout, `/proc` en `hidepid=2` — R28 | 🚦 sensible · 🔄 redémarrage |
+| I25 | 👤 Comptes | `/tmp` et `/var/tmp` propres à chaque utilisateur (`pam_namespace`) — R55 | 🚦 sensible |
+| I26 | 🕵️ Journalisation | Intégrité des fichiers : AIDE, base de référence, contrôle quotidien — R79 | ✅ auto (plusieurs minutes, en dernier) |
 
 ### 🟥 Niveau Renforcé (`-l renforce`, depuis v1.5)
 
 > ⚠️ Le niveau Renforcé n'est pas « un script de plus » : la moitié des points dépend des applications, de l'infrastructure ou du matériel. Le script applique les mesures **génériques** et **signale** les autres.
 
-**Mesures simples (contrôle + correction)**
+**Mesures simples (contrôle + correction)** — R02, R04, R07, R10 et R12 sont passées au niveau Intermédiaire en v1.7 (I20, I22, I19, I26, I18), car le guide les y classe.
 
 | ID | Mesure | Correction |
 | --- | --- | --- |
-| R01 | Options noyau au démarrage (`init_on_free`, `pti=on`, `vsyscall=none`…) | ✅ auto · 🔄 redémarrage |
-| R02 | Verrouillage après 5 échecs (`pam_faillock`) | 🚦 sensible |
+| R01 | Options noyau au démarrage (`init_on_free`, `vsyscall=none`, `debugfs=off`…) | ✅ auto · 🔄 redémarrage |
 | R03 | umask 077 | ✅ auto |
-| R04 | Répertoires personnels en 750 | ✅ auto |
 | R05 | Aucun compilateur installé | ✅ auto |
 | R06 | SSH : algorithmes restreints (guide ANSSI OpenSSH) | ✅ auto |
-| R07 | Déconnexion des shells inactifs (`TMOUT=900`) | ✅ auto |
 | R08 | Ctrl-Alt-Suppr désactivé | ✅ auto |
 | R09 | Règles auditd verrouillées (`-e 2`) | ✅ auto · 🔄 redémarrage |
-| R10 | Intégrité des fichiers (AIDE) | ✅ auto (plusieurs minutes) |
 | R11 | Modules noyau bloqués après le démarrage | 🚦 sensible · 🔄 redémarrage |
-| R12 | IPv6 désactivé s'il n'est pas utilisé | 🚦 sensible |
 
 **Points à étudier (contrôle seul)**
 
@@ -517,6 +614,8 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.7** | **Niveau Intermédiaire complet vis-à-vis de R1–R80** : 10 nouvelles mesures I17–I26 (options mémoire du noyau, IPv6, sessions inactives, faillock + historique, directives sudo, répertoires personnels, Secure Boot, options de montage + hidepid, `pam_namespace`, AIDE), M15 (dépôts APT) ; I01, I02, I13, M03, M10 complétés ; R02, R04, R07, R10, R12 déplacées vers l'Intermédiaire ; `anssi-bp028-r80.sh` 1.1 : écarts justifiés et attestations (`-j`) |
+| **v1.6** | Nouveau script `anssi-bp028-r80.sh` : vérification supplémentaire des 80 recommandations R1–R80 du guide (référentiel ComplianceAsCode `controls/anssi.yml`, adapté à Ubuntu), lecture seule, export CSV |
 | **docs** | README : questions préalables (Étape 0), dimensionnement 256 Go / 512 Go / 1 To, cas Docker + base de données, portables, section Docker |
 | **v1.5.1** | R05 : `gcc-NN-base` (bibliothèque d'exécution) n'est plus pris pour un compilateur |
 | **v1.5** | Module `anssi-lib-renforce.sh`, niveau `-l renforce` : 12 mesures simples (R01–R12, dont 3 sensibles) + 8 points à étudier en contrôle seul (R20–R27) |
