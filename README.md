@@ -5,7 +5,7 @@
 **Audit et durcissement d'Ubuntu selon le guide ANSSI-BP-028 v2.0**
 *« Recommandations de configuration d'un système GNU/Linux » — niveaux Minimal et Intermédiaire*
 
-![Version](https://img.shields.io/badge/version-v1.8.2-blue)
+![Version](https://img.shields.io/badge/version-v1.8.3-blue)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04%20LTS-E95420?logo=ubuntu&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?logo=gnubash&logoColor=white)
 ![ANSSI](https://img.shields.io/badge/ANSSI--BP--028-Minimal%20%7C%20Interm%C3%A9diaire%20%7C%20Renforc%C3%A9-002395)
@@ -629,6 +629,7 @@ sudo reboot
 
 | Version | Changements |
 | --- | --- |
+| **v1.8.3** | I21 : règle `root ALL=(ALL:ALL) EXEC: ALL` ajoutée — sans elle, `sudo` appelé depuis une session root (sudo -i imbriqué, scripts, cron) hérite de `noexec` et le shell obtenu ne peut plus rien exécuter (constaté sous sudo-rs) |
 | **v1.8.2** | Notes non bloquantes issues de la validation Docker/FichetConnect : M01 signale les paquets épinglés (`apt-mark hold`), M05 propose le rejet de `127.0.0.0/8` hors `lo` (Docker), I24 avertit si systemd exécute des scripts depuis `/opt` ; section « Options Docker sur demande » |
 | **v1.8.1** | I08 : règles auditd complétées pour R73 (lastlog, faillock, utmp/wtmp/btmp, wtmpdb/lastlog2 si présents, AppArmor, sethostname/setdomainname, /etc/hosts) ; `/var/log/sudo.log` surveillé seulement avec sudo.ws |
 | **v1.8** | **Ubuntu 26.04 et sudo-rs** : détection sudo-rs (I09/I21 sans `requiretty`/`logfile`, `Defaults!apt/apt-get/dpkg umask_override`, `visudo -c -f` compatible) ; M04 masque `sshd-unix-local.socket` et désactive cloud-init ; M09 `/etc/crypttab` 600 ; I05 `noexec` sur `/tmp` via drop-in `tmp.mount` ; I08 règles auditd Docker ; I11 purge kdump ; I13 `sync` en nologin ; I24 remontage APT fondé sur l'état réel ; I26 exclusions AIDE (Docker, journaux) ; `anssi-bp028-r80.sh` 1.2 : `perf_event_paranoid ≥ 2`, R79 dédoublonné par processus, remarques sudo-rs sur R39 |

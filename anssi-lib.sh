@@ -1363,12 +1363,16 @@ apply_I21() {
   for o in /usr/bin/apt /usr/bin/apt-get /usr/bin/dpkg; do content+=$'\n'"Defaults!$o umask=0022, umask_override"; done
   tmpd=$(mktemp -d)
   printf '%s\n' "$content" >"$tmpd/a"
-  printf '%s\n' "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)" "%$grp ALL=(ALL:ALL) EXEC: ALL" >"$tmpd/b"
+  local admin_rules="# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)
+%$grp ALL=(ALL:ALL) EXEC: ALL
+# root : sudo lancé depuis une session root (sudo -i imbriqué, scripts, cron) ; sans EXEC:, noexec
+# rend le shell inutilisable (« Permission denied » sur toute commande) - constaté sous sudo-rs (v1.8.3)
+root ALL=(ALL:ALL) EXEC: ALL"
+  printf '%s\n' "$admin_rules" >"$tmpd/b"
   if ! visudo_ok "$tmpd/a" || ! visudo_ok "$tmpd/b"; then err "Syntaxe sudoers invalide, abandon."; rm -rf "$tmpd"; return 1; fi
   rm -rf "$tmpd"
   write_file "$SUDO_STRICT_FILE" 440 "$content"
-  write_file "$SUDO_ADMIN_FILE" 440 "# Administrateurs : sous-processus autorisés (ANSSI-BP-028 R41, écart documenté)
-%$grp ALL=(ALL:ALL) EXEC: ALL"
+  write_file "$SUDO_ADMIN_FILE" 440 "$admin_rules"
   ((DRY_RUN)) && return 0
   if ! visudo_all_ok; then
     err "Configuration sudo globale invalide : restauration."
