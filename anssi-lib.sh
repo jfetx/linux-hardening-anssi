@@ -210,6 +210,9 @@ check_M01() {
   local n
   n=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c '^Inst ')
   DETAIL="$n paquet(s) en attente (d'après le cache apt local)"
+  # v1.8.2 : paquets épinglés (apt-mark hold, ex. Docker par FichetConnect) exclus par apt -> signalés
+  local h; h=$(apt-mark showhold 2>/dev/null | tr '\n' ' ')
+  [[ -n ${h// /} ]] && DETAIL+=" ; note : épinglés (hold, mises à jour MANUELLES à documenter, R61) : ${h% }"
   ((n==0)) && return $OK || return $KO
 }
 apply_M01() {
@@ -310,7 +313,12 @@ check_M05() {
   fi
   local st; st=$(ufw status verbose 2>/dev/null)
   if grep -q '^Status: active' <<<"$st" && grep -q 'deny (incoming)' <<<"$st"; then
-    DETAIL="actif, entrant refusé par défaut"; return $OK
+    DETAIL="actif, entrant refusé par défaut"
+    # v1.8.2 : note facultative (Docker + userland-proxy=false -> route_localnet=1 sur les bridges)
+    if command -v dockerd >/dev/null 2>&1 && ! grep -qs -- '-d 127.0.0.0/8 -j DROP' /etc/ufw/before.rules; then
+      DETAIL+=" ; note Docker : rejet de 127.0.0.0/8 hors lo non posé (option, voir README)"
+    fi
+    return $OK
   fi
   DETAIL="inactif ou politique entrante permissive"; return $KO
 }
@@ -324,6 +332,10 @@ apply_M05() {
   run ufw logging low
   run ufw --force enable
   info "Filtrage sortant non appliqué : à définir avec l'équipe projet si besoin."
+  if command -v dockerd >/dev/null 2>&1 && ! grep -qs -- '-d 127.0.0.0/8 -j DROP' /etc/ufw/before.rules; then
+    info "Option Docker (sur demande) : rejeter 127.0.0.0/8 hors interface lo (route_localnet=1 posé par Docker) :"
+    info "  sed -i '/^-A ufw-before-input -i lo -j ACCEPT/a -A ufw-before-input ! -i lo -d 127.0.0.0/8 -j DROP' /etc/ufw/before.rules && ufw reload"
+  fi
 }
 
 # --- M06 : SSH -----------------------------------------------------------------
@@ -854,7 +866,19 @@ apply_I08() {
 -w /etc/gshadow -p wa -k identite
 -w /etc/sudoers -p wa -k sudoers
 -w /etc/sudoers.d/ -p wa -k sudoers
--w /var/log/sudo.log -p wa -k sudo_log
+## Connexions, sessions et échecs de connexion (R73)
+-w /var/log/lastlog -p wa -k connexions
+-w /run/faillock -p wa -k connexions
+-w /run/utmp -p wa -k sessions
+-w /var/log/wtmp -p wa -k sessions
+-w /var/log/btmp -p wa -k sessions
+## Politique MAC (R73)
+-w /etc/apparmor/ -p wa -k mac
+-w /etc/apparmor.d/ -p wa -k mac
+## Réseau (R73)
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k reseau
+-w /etc/hosts -p wa -k reseau
+-w /etc/hostname -p wa -k reseau
 ## Configuration SSH
 -w /etc/ssh/sshd_config -p wa -k sshd
 -w /etc/ssh/sshd_config.d/ -p wa -k sshd
@@ -869,7 +893,15 @@ apply_I08() {
 -w /etc/localtime -p wa -k heure
 ## Commandes exécutées en root par un utilisateur
 -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k exec_root'
+  # sudo.ws : journal dédié (I09) ; sudo-rs : journald, pas de fichier
+  [[ $(sudo_impl) == ws ]] && rules+=$'\n-w /var/log/sudo.log -p wa -k sudo_log'
+  # Ubuntu récent : wtmpdb / lastlog2 (bases SQLite) remplacent wtmp / lastlog
+  local f
+  for f in /var/lib/wtmpdb/wtmp.db /var/lib/lastlog/lastlog2.db; do
+    [[ -e $f ]] && rules+=$'\n'"-w $f -p wa -k sessions"
+  done
   if [[ $(uname -m) == x86_64 ]]; then
+    rules+=$'\n-a always,exit -F arch=b32 -S sethostname,setdomainname -k reseau'
     rules+=$'\n-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules'
     rules+=$'\n-a always,exit -F arch=b32 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k exec_root'
   fi
@@ -1429,6 +1461,10 @@ fstab_add_opts() { # point options_à_ajouter
 }
 apply_I24() {
   local mp o fo add
+  # v1.8.2 : scripts exécutés par systemd depuis /opt (ex. pare-feu FichetConnect) -> jamais noexec sur /opt
+  if grep -rqsE '^Exec[A-Za-z]*=[-@+!:]*/opt/' /etc/systemd/system 2>/dev/null; then
+    warn "/opt héberge des scripts lancés par systemd ($(grep -rlsE '^Exec[A-Za-z]*=[-@+!:]*/opt/' /etc/systemd/system | head -2 | tr '\n' ' ')) : ne JAMAIS ajouter noexec à /opt."
+  fi
   for mp in $(fstab_mounts); do
     fo=$(fstab_opts "$mp"); add=""
     for o in $(mnt_wanted "$mp" | tr ',' ' '); do [[ ,$fo, == *",$o,"* ]] || add+="${add:+,}$o"; done
